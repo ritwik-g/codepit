@@ -96,7 +96,10 @@ export interface ClientHostEvents {
   toolCall: (record: ToolCallRecord) => void;
   toolCallUpdate: (record: ToolCallRecord) => void;
   plan: (entries: PlanEntry[]) => void;
-  usageUpdate: (usage: TokenUsage) => void;
+  /** How full the context is now (ACP usage_update.used). */
+  contextUsage: (tokens: number) => void;
+  /** Tokens one turn spent (ACP PromptResponse.usage). */
+  turnUsage: (usage: TurnUsage) => void;
   permissionRequested: (perm: PendingPermission) => void;
   permissionResolved: (permId: string, info: { cancelled: boolean }) => void;
   elicitationRequested: (elicitation: PendingElicitation) => void;
@@ -537,12 +540,7 @@ export class AcpClientHost extends EventEmitter {
         }
         case 'usage_update': {
           const used = typeof update.used === 'number' ? update.used : (update.usage?.contextTokens || 0);
-          this.emit('usageUpdate', {
-            contextTokens: used,
-            inputTokens: used,
-            outputTokens: 0,
-            cachedTokens: 0,
-          });
+          if (used > 0) this.emit('contextUsage', used);
           if (typeof update.size === 'number' && update.size > 0) this.emit('contextWindow', update.size);
           const rateLimit = (update._meta as any)?.['_claude/rateLimit'] || (update as any).rate_limit_info;
           if (rateLimit) {
@@ -921,6 +919,8 @@ export class AcpClientHost extends EventEmitter {
         throw err;
       }
     }
+    const usage = turnUsage(res?.usage);
+    if (usage) this.emit('turnUsage', usage);
     return res?.stopReason || 'end_turn';
   }
 
@@ -1284,6 +1284,26 @@ function agentRef(res: any): ToolCallRecord['agentRef'] {
   };
   const set = Object.fromEntries(Object.entries(ref).filter(([, v]) => v !== undefined));
   return Object.keys(set).length > 0 ? set : undefined;
+}
+
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedReadTokens: number;
+  cachedWriteTokens: number;
+}
+
+/** The tokens a turn spent, from ACP's PromptResponse.usage; none when the agent doesn't say. */
+export function turnUsage(u: any): TurnUsage | undefined {
+  if (!u || typeof u !== 'object') return undefined;
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  const usage = {
+    inputTokens: num(u.inputTokens),
+    outputTokens: num(u.outputTokens),
+    cachedReadTokens: num(u.cachedReadTokens),
+    cachedWriteTokens: num(u.cachedWriteTokens),
+  };
+  return Object.values(usage).some((v) => v > 0) ? usage : undefined;
 }
 
 /** Totals Claude's Agent tool reports when a subagent finishes. */

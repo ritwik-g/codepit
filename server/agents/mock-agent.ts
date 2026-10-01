@@ -427,7 +427,11 @@ class MockAcpAgent {
         },
       });
 
-      return { stopReason: 'end_turn' as const };
+      // What the turn spent, as Claude's agent reports it
+      return {
+        stopReason: 'end_turn' as const,
+        usage: { inputTokens: 120, outputTokens: 340, cachedReadTokens: 1500, cachedWriteTokens: 250, totalTokens: 2210 },
+      };
     } catch (err: any) {
       if (abortSignal.aborted) {
         return { stopReason: 'cancelled' as const };

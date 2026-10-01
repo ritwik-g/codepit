@@ -5,7 +5,7 @@ import { useEscapeLayer } from '../hooks';
 import { LiveTerminalPanel } from './LiveTerminalPanel';
 import { ActivityStrip } from './ActivityStrip';
 import { UsageTab } from './UsageTab';
-import { sessionPricing } from '../pricing';
+import { usageMetrics } from '../pricing';
 import { commandOf, isShellCall } from '../toolDisplay';
 import { getModelMeta } from './AgentModelPicker';
 import { advertisedModelLabel, effortLabel, sessionEffortChoices } from '../effort';
@@ -291,11 +291,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   };
 
   // ---------------------------------------------------------------- Usage
-  const pricing = sessionPricing(session);
-  const inputTokens = session.usage?.inputTokens || 0;
-  const outputTokens = session.usage?.outputTokens || 0;
-  const contextTokens = session.usage?.contextTokens || inputTokens;
-  const estimatedCost = (inputTokens / 1_000_000) * pricing.inputPerMillion + (outputTokens / 1_000_000) * pricing.outputPerMillion;
+  const { pricing, contextTokens, estimatedCost } = usageMetrics(session);
 
   const currentModelMeta = getModelMeta(session.model || 'sonnet');
   const activeEffort = session.effort || 'auto';

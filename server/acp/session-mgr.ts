@@ -7,7 +7,7 @@ import { store } from '../store.js';
 import { getGitInfo } from '../git.js';
 import { hasRunningBackground, isWorkingInBackground, rankSession, sortSessions } from '../rank.js';
 import { getAgent, hasAgent, listAgents } from '../agents/registry.js';
-import { AcpClientHost, HostClosedError, TurnInFlightError, capToolOutput, normalizeClaudeModel, type ChunkMeta, type CompactionEvent, type ElicitationOutcome } from './client-host.js';
+import { AcpClientHost, HostClosedError, TurnInFlightError, capToolOutput, normalizeClaudeModel, type ChunkMeta, type CompactionEvent, type ElicitationOutcome, type TurnUsage } from './client-host.js';
 import { describeElicitationAnswer, validateElicitationContent } from './elicitation.js';
 import { HANDOFF_SUMMARY_PROMPT, autoCompactDecision, capSummary, contextWindowFor, latestCompaction, readAutoCompactDefault, writeAutoCompactDefault } from '../compaction.js';
 import { ptyManager } from '../pty-manager.js';
@@ -17,7 +17,7 @@ import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, remem
 import { logQueueEvent } from '../queue-log.js';
 import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopTranscriptWatchers, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
-import type { AcpSession, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
+import type { AcpSession, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
 /**
  * Format conversation history into a structured briefing block for context transfer.
@@ -92,6 +92,22 @@ export function formatSessionHistory(
 }
 
 /** The model to stamp on an agent turn: the one the agent runs when it refused the chosen one. */
+/**
+ * Add one turn's tokens to the session's totals. Sessions from before the totals
+ * were summed per turn stored the context size as input, so their first turn
+ * starts the count from zero.
+ */
+export function addTurnUsage(usage: TokenUsage, turn: TurnUsage): TokenUsage {
+  const base = usage.lifetime ? usage : { ...usage, inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+  return {
+    ...base,
+    inputTokens: base.inputTokens + turn.inputTokens + turn.cachedWriteTokens,
+    outputTokens: base.outputTokens + turn.outputTokens,
+    cachedTokens: base.cachedTokens + turn.cachedReadTokens,
+    lifetime: true,
+  };
+}
+
 function stampedModel(s: AcpSession, host: AcpClientHost): string | undefined {
   return host.modelRefused ? host.options?.currentModel ?? s.model : s.model;
 }
@@ -588,7 +604,7 @@ export class SessionManager extends EventEmitter {
       reasons: ['initialized'],
       lastPrompt: '',
       recap: `Session created with ${agent.name} in ${folderName}`,
-      usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, contextTokens: 0 },
+      usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, contextTokens: 0, lifetime: true },
       git,
       user: {
         priority: null,
@@ -889,15 +905,19 @@ export class SessionManager extends EventEmitter {
       this.emit('sessionStream', { sessionId: s.id, type: 'contextWindow', session: { contextWindow: size } });
     });
 
-    host.on('usageUpdate', (usage) => {
+    host.on('contextUsage', (tokens) => {
       const s = store.get(session.id);
       if (!s) return;
-      s.usage = {
-        inputTokens: usage.inputTokens || s.usage.inputTokens,
-        outputTokens: usage.outputTokens || s.usage.outputTokens,
-        cachedTokens: usage.cachedTokens || s.usage.cachedTokens,
-        contextTokens: usage.contextTokens || s.usage.contextTokens,
-      };
+      s.usage = { ...s.usage, contextTokens: tokens };
+      store.save(s);
+      this.emit('sessionStream', { sessionId: s.id, type: 'usage', usage: s.usage });
+    });
+
+    // Every turn adds to the session's totals, whichever agent ran it, so they survive compactions and switches
+    host.on('turnUsage', (turn) => {
+      const s = store.get(session.id);
+      if (!s) return;
+      s.usage = addTurnUsage(s.usage, turn);
       store.save(s);
       this.emit('sessionStream', { sessionId: s.id, type: 'usage', usage: s.usage });
     });

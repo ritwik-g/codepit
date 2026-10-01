@@ -85,14 +85,18 @@ function listPricing(session: AcpSession): ModelPricing {
 
 export function usageMetrics(session: AcpSession) {
   const pricing = sessionPricing(session);
-  const inputTokens = session.usage?.inputTokens || 0;
-  const outputTokens = session.usage?.outputTokens || 0;
-  const cachedTokens = session.usage?.cachedTokens || 0;
-  const contextTokens = session.usage?.contextTokens || inputTokens;
+  // Totals are the session's whole life; sessions from before they were summed per turn have none yet
+  const counted = Boolean(session.usage?.lifetime);
+  const inputTokens = counted ? session.usage.inputTokens || 0 : 0;
+  const outputTokens = counted ? session.usage.outputTokens || 0 : 0;
+  const cachedTokens = counted ? session.usage.cachedTokens || 0 : 0;
+  const contextTokens = session.usage?.contextTokens || 0;
   const percentContext = Math.min(100, Math.round((contextTokens / pricing.contextWindow) * 100));
   const estimatedCost =
-    (inputTokens / 1_000_000) * pricing.inputPerMillion + (outputTokens / 1_000_000) * pricing.outputPerMillion;
-  return { pricing, inputTokens, outputTokens, cachedTokens, contextTokens, percentContext, estimatedCost };
+    (inputTokens / 1_000_000) * pricing.inputPerMillion +
+    (outputTokens / 1_000_000) * pricing.outputPerMillion +
+    (cachedTokens / 1_000_000) * pricing.cachePerMillion;
+  return { pricing, counted, inputTokens, outputTokens, cachedTokens, contextTokens, percentContext, estimatedCost };
 }
 
 /** "$0.00", "$0.0042", "$1.37", "$1,204.50". */

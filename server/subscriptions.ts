@@ -492,6 +492,16 @@ export function getVendorSubscriptions(): Record<'anthropic' | 'openai' | 'googl
   };
 }
 
+/**
+ * The tokens a session spent over its life. Sessions from before the totals were
+ * summed per turn stored the context size as input, which is no total, so they count as none.
+ */
+export function lifetimeTokens(session: AcpSession): { inputTokens: number; outputTokens: number; cachedTokens: number } {
+  const u = session.usage;
+  if (!u?.lifetime) return { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+  return { inputTokens: u.inputTokens || 0, outputTokens: u.outputTokens || 0, cachedTokens: u.cachedTokens || 0 };
+}
+
 export function calculateSessionCost(session: AcpSession): {
   inputCost: number;
   outputCost: number;
@@ -500,9 +510,7 @@ export function calculateSessionCost(session: AcpSession): {
   pricing: ModelPricing;
 } {
   const pricing = getPricingForModel(session.model);
-  const inputTokens = session.usage?.inputTokens || 0;
-  const outputTokens = session.usage?.outputTokens || 0;
-  const cachedTokens = session.usage?.cachedTokens || 0;
+  const { inputTokens, outputTokens, cachedTokens } = lifetimeTokens(session);
 
   const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
   const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion;
@@ -600,9 +608,7 @@ export function getUsageSummary(): UsageReport {
   };
 
   for (const s of sessions) {
-    const input = s.usage?.inputTokens || 0;
-    const output = s.usage?.outputTokens || 0;
-    const cached = s.usage?.cachedTokens || 0;
+    const { inputTokens: input, outputTokens: output, cachedTokens: cached } = lifetimeTokens(s);
     const total = input + output;
 
     // Check which vendors actually executed turns in this session
@@ -688,7 +694,7 @@ export function getUsageSummary(): UsageReport {
     report.overall.estimatedCost += sessionCost;
 
     const primaryPricing = getPricingForModel(s.model);
-    const context = s.usage?.contextTokens || input;
+    const context = s.usage?.contextTokens || 0;
     // What the agent reported wins over the table; "[1m]" model ids mean a 1M window
     const contextLimit = s.contextWindow || contextWindowHint(s.model) || primaryPricing.contextWindow;
     const percentContext = Math.min(100, Math.round((context / contextLimit) * 100));

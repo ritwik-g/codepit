@@ -195,8 +195,10 @@ export const UsageTab: React.FC<{
   onCompact: () => void;
   compacting: boolean;
 }> = ({ session, onOpenSubscriptionsModal, onCompact, compacting }) => {
-  const { pricing, inputTokens, outputTokens, cachedTokens, contextTokens, percentContext, estimatedCost } =
+  const { pricing, counted, inputTokens, outputTokens, cachedTokens, contextTokens, percentContext, estimatedCost } =
     usageMetrics(session);
+  // A session from before totals were kept shows dashes until its next turn starts the count
+  const total = (n: number, fmt: (n: number) => string) => (counted ? fmt(n) : '—');
   const modelMeta = getModelMeta(session.model || 'sonnet');
   const isFree = pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0;
   const hasUsage = inputTokens + outputTokens + contextTokens > 0;
@@ -251,18 +253,22 @@ export const UsageTab: React.FC<{
 
             <div className="usg-stats">
               <Card className="usg-stat" padding="md">
-                <Stat label="Input" value={formatTokens(inputTokens)} hint="Prompts and tool results" />
+                <Stat
+                  label="Input"
+                  value={total(inputTokens, formatTokens)}
+                  hint={counted ? 'Prompts and tool results, whole session' : 'Counted from the next turn'}
+                />
               </Card>
               <Card className="usg-stat" padding="md">
-                <Stat label="Output" value={formatTokens(outputTokens)} hint="Replies and reasoning" />
+                <Stat label="Output" value={total(outputTokens, formatTokens)} hint="Replies and reasoning" />
               </Card>
               <Card className="usg-stat" padding="md">
-                <Stat label="Cached" value={formatTokens(cachedTokens)} hint="From the prompt cache" />
+                <Stat label="Cached" value={total(cachedTokens, formatTokens)} hint="From the prompt cache" />
               </Card>
               <Card className="usg-stat" padding="md">
                 <Stat
                   label="Estimated cost"
-                  value={formatCost(estimatedCost)}
+                  value={total(estimatedCost, formatCost)}
                   tone={isFree ? undefined : 'ok'}
                   hint={isFree ? 'Runs locally, no charge' : `${pricing.basis} list price`}
                 />

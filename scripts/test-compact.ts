@@ -175,6 +175,30 @@ await test('compaction_update and summary chunks decode, with token counts from 
   assert.equal(parseCompactionUpdate({ sessionUpdate: 'compaction_update' }), null);
 });
 
+console.log('Token totals');
+
+const { addTurnUsage } = await import('../server/acp/session-mgr.js');
+const { turnUsage } = await import('../server/acp/client-host.js');
+
+await test('a turn adds to the totals; an older session, which stored the context size as input, starts from zero', () => {
+  const turn = { inputTokens: 10, outputTokens: 20, cachedReadTokens: 300, cachedWriteTokens: 5 };
+  const legacy = { inputTokens: 95394, outputTokens: 0, cachedTokens: 0, contextTokens: 95394 };
+  assert.deepEqual(addTurnUsage(legacy, turn), { inputTokens: 15, outputTokens: 20, cachedTokens: 300, contextTokens: 95394, lifetime: true });
+  const counted = { inputTokens: 100, outputTokens: 50, cachedTokens: 1000, contextTokens: 4000, lifetime: true };
+  assert.deepEqual(addTurnUsage(counted, turn), { inputTokens: 115, outputTokens: 70, cachedTokens: 1300, contextTokens: 4000, lifetime: true });
+});
+
+await test("a turn's usage is read from the prompt response, and an empty one is none", () => {
+  assert.deepEqual(turnUsage({ inputTokens: 1, outputTokens: 2, cachedReadTokens: 3, totalTokens: 6 }), {
+    inputTokens: 1,
+    outputTokens: 2,
+    cachedReadTokens: 3,
+    cachedWriteTokens: 0,
+  });
+  assert.equal(turnUsage(undefined), undefined);
+  assert.equal(turnUsage({ inputTokens: 0, outputTokens: 0 }), undefined);
+});
+
 console.log('Handoff compaction against the mock agent');
 
 const waitForIdle = async (id: string, timeoutMs = 20_000) => {
@@ -231,6 +255,17 @@ try {
     assert.equal(count(lastThought, summary.slice(0, 60)), 1);
     assert.ok(lastThought.includes('What was the codeword'), 'turns after the boundary are included');
     assert.ok(!lastThought.includes('Remember the codeword PAPAYA'));
+  });
+
+  await test('token totals cover the whole session, through the compaction and the agent switch', async () => {
+    // Three prompts so far, each reported as 120 input + 250 cache writes, 340 output, 1500 cache reads
+    const u = sessionManager.getSession(s.id)!.usage;
+    assert.equal(u.lifetime, true);
+    const turns = u.outputTokens / 340;
+    assert.ok(Number.isInteger(turns) && turns >= 3, `output ${u.outputTokens}`);
+    assert.equal(u.inputTokens, turns * 370);
+    assert.equal(u.cachedTokens, turns * 1500);
+    assert.equal(u.contextTokens, 1870, 'the context size stays separate from the totals');
   });
 
   await test('"Compact when finished" fires after a clean turn over the threshold, marked automatic', async () => {

@@ -254,10 +254,15 @@ export interface GitInfo {
 }
 
 export interface TokenUsage {
+  /** Lifetime totals, summed from what each turn reports: input includes prompt-cache writes */
   inputTokens: number;
   outputTokens: number;
+  /** Lifetime prompt-cache reads */
   cachedTokens: number;
+  /** What the context holds now; drops after a compaction or an agent switch */
   contextTokens: number;
+  /** Set once the totals are summed per turn. Older sessions stored the context size as input. */
+  lifetime?: boolean;
 }
 
 export interface UserAnnotations {
