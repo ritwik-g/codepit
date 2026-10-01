@@ -197,6 +197,45 @@ export function completeAsyncSubagent(s: AcpSession, taskId: string, report: str
   return { task, call };
 }
 
+/**
+ * Settle as completed every async subagent whose transcript has already ended. Run before
+ * background work is stopped (quit, agent stop, restart), so one that finished unnoticed is
+ * not recorded as stopped. `alsoStopped` re-checks ones a stop already closed that way.
+ */
+export function settleEndedSubagents(s: AcpSession, alsoStopped = false): AgentTask[] {
+  const settled: AgentTask[] = [];
+  for (const task of tasksOf(s)) {
+    if (task.kind !== 'subagent' || !task.toolCallId) continue;
+    if (task.status !== 'running' && !(alsoStopped && task.status === 'stopped')) continue;
+    const call = findCall(s, task.toolCallId);
+    const file = call?.agentOutputFile;
+    if (!file) continue;
+    const end = readTranscriptEnd(file);
+    if (!end.done) continue;
+    let endedAt: number | undefined;
+    try {
+      endedAt = fs.statSync(file).mtimeMs;
+    } catch {
+      // the transcript's time is only a better end time than now
+    }
+    if (task.status === 'stopped') {
+      // The stop's reason described a subagent that was in fact already done
+      task.status = 'running';
+      task.endedAt = undefined;
+      task.summary = undefined;
+      call!.backgroundSummary = undefined;
+    }
+    const done = completeAsyncSubagent(s, task.id, end.report);
+    if (!done) continue;
+    if (endedAt && endedAt >= task.startedAt) {
+      task.endedAt = endedAt;
+      if (done.call) done.call.backgroundEndedAt = endedAt;
+    }
+    settled.push(task);
+  }
+  return settled;
+}
+
 // ---------------------------------------------------------------------------
 
 function upsertFromCall(s: AcpSession, call: ToolCallRecord): AgentTask | undefined {

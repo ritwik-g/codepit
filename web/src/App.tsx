@@ -214,7 +214,7 @@ export const App: React.FC = () => {
             setActiveSession((prev) => (prev && prev.id === msg.sessionId ? applyTaskText(prev, msg.taskText as AgentTaskTextDelta) : prev));
           }
           if (msg.event === 'rateLimits' || msg.rateLimits) {
-            setActiveSession((prev) => (prev && prev.id === selectedId ? { ...prev, rateLimits: msg.rateLimits || prev.rateLimits } : prev));
+            setActiveSession((prev) => (prev && prev.id === msg.sessionId ? { ...prev, rateLimits: msg.rateLimits || prev.rateLimits } : prev));
           }
           if (msg.event === 'promptSuggestion' || msg.promptSuggestion) {
             setActiveSession((prev) => (prev && prev.id === selectedId ? { ...prev, promptSuggestion: msg.promptSuggestion || prev.promptSuggestion } : prev));
@@ -235,6 +235,9 @@ export const App: React.FC = () => {
           fetchSessionDetail(selectedId);
           fetchSessions();
         }
+      } else if (msg.type === 'claudeRateLimits' && msg.rateLimits) {
+        // Claude's plan limits are account-wide, so a Claude session's Usage tab follows them live
+        setActiveSession((prev) => (prev && prev.agentId === 'claude' ? { ...prev, rateLimits: msg.rateLimits } : prev));
       } else if (msg.type === 'pairingRequest' && msg.request) {
         setPairingToast(msg.request as PairingRequestInfo);
       } else if (msg.type === 'devicesChanged') {

@@ -102,6 +102,20 @@ async function main(): Promise<void> {
   const fourth = await ask(id, 'after the restart');
   check('continued after the restart', field(fourth, 'resumed') === 'true' && field(fourth, 'seen') === '4' && field(fourth, 'history') === 'false', fourth);
 
+  console.log('3b. A turn cut off by quitting says so after the restart');
+  const cutOff = sessionManager.sendPrompt(id, 'slow-turn, then quit').catch(() => {});
+  for (let i = 0; i < 50 && sessionManager.getSession(id)!.state !== 'working'; i++) await new Promise((r) => setTimeout(r, 100));
+  check('the turn is running when CodePit quits', sessionManager.getSession(id)!.state === 'working', sessionManager.getSession(id)!.state);
+  sessionManager.shutdown();
+  sessionManager.init();
+  void cutOff;
+  check('back as your turn, not working', sessionManager.getSession(id)!.state === 'needs_you', sessionManager.getSession(id)!.state);
+  check('a note says the turn was cut off and the next message continues', /CodePit stopped while this turn was running.*continues the same agent session/.test(notes(id).at(-1) || ''), notes(id).at(-1));
+  sessionManager.init();
+  check('a second start adds no second note', notes(id).filter((n) => n.startsWith('CodePit stopped while')).length === 1);
+  const carried = await ask(id, 'carry on');
+  check('the next message continues the same agent session', field(carried, 'resumed') === 'true' && field(carried, 'history') === 'false', carried);
+
   console.log('4. When the agent cannot continue it, a new session gets a summary');
   await sessionManager.stopSessionAgent(id);
   fs.rmSync(path.join(stateDir, `${agentSession}.json`));

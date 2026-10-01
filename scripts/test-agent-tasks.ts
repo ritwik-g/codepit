@@ -13,6 +13,7 @@ import {
   completeAsyncSubagent,
   endAgentTasks,
   readTranscriptEnd,
+  settleEndedSubagents,
   stopAgentTask,
   syncAgentTasks,
   trackAsyncTask,
@@ -183,6 +184,46 @@ test('an async subagent runs until its transcript ends, then carries the report'
   assert.equal(done.call!.subagentText, 'The file says hello');
   assert.equal((s.agentTasks![0].segments!.at(-1) as any).text, 'The file says hello');
   assert.equal(completeAsyncSubagent(s, 'a1', 'again'), null);
+});
+
+test('a subagent already finished when the agent stops is completed, not stopped', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tasks-'));
+  const doneFile = path.join(dir, 'done.output');
+  const busyFile = path.join(dir, 'busy.output');
+  const line = (o: unknown) => JSON.stringify(o) + '\n';
+  fs.writeFileSync(
+    doneFile,
+    line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'h1', name: 'SubagentHandback', input: { message: 'Report A' } }] } }) +
+      line({ type: 'user', toolEndsTurn: true, message: { content: [{ type: 'tool_result', tool_use_id: 'h1' }] } })
+  );
+  fs.writeFileSync(busyFile, line({ type: 'assistant', message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1' }] } }));
+  const finishedAt = Date.parse('2026-10-01T11:00:00Z');
+  fs.utimesSync(doneFile, finishedAt / 1000, finishedAt / 1000);
+
+  const s = session([agentTurn()]);
+  addCall(s, { id: 'a1', title: 'Finished', status: 'running', startedAt: 1, isSubagent: true });
+  update(s, 'a1', { status: 'completed', background: true, output: 'Async agent launched', agentOutputFile: doneFile });
+  addCall(s, { id: 'a2', title: 'Still going', status: 'running', startedAt: 1, isSubagent: true });
+  update(s, 'a2', { status: 'completed', background: true, output: 'Async agent launched', agentOutputFile: busyFile });
+
+  // What a stop does first: the finished one completes with its report and its real end time
+  assert.deepEqual(settleEndedSubagents(s).map((t) => t.id), ['a1']);
+  endAgentTasks(s, 'Stopped when the agent was stopped');
+  assert.deepEqual(s.agentTasks!.map((t) => t.status), ['completed', 'stopped']);
+  assert.equal(s.agentTasks![0].endedAt, finishedAt);
+  assert.equal((s.agentTasks![0].segments!.at(-1) as any).text, 'Report A');
+
+  // One a stop already closed is repaired on the next start, and only when asked to look at stopped ones
+  const t = s.agentTasks![0];
+  Object.assign(t, { status: 'stopped', summary: 'Stopped when the server restarted', endedAt: Date.now() });
+  assert.deepEqual(settleEndedSubagents(s), []);
+  assert.deepEqual(settleEndedSubagents(s, true).map((x) => x.id), ['a1']);
+  assert.equal(t.status, 'completed');
+  assert.equal(t.summary, undefined);
+  assert.equal(t.endedAt, finishedAt);
+  // A subagent the stop really cut short stays stopped
+  assert.equal(s.agentTasks![1].status, 'stopped');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('stopping the agent stops running tasks and leaves finished ones', () => {

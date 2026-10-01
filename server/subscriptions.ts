@@ -208,6 +208,38 @@ let cachedClaudeRateLimits: VendorRateLimits = {
   updatedAt: 0,
 };
 let isRefreshingClaudeLimits = false;
+/** When `claude -p "/usage"` last ran. Kept apart from updatedAt: an agent's own rate-limit
+ * events often carry no percentage, and must not make a stale number look fresh. */
+let lastClaudeProbeAt = 0;
+/** How often the numbers are re-read while something asks for them (about 4s of CPU a probe). */
+const CLAUDE_PROBE_EVERY_MS = 2 * 60_000;
+const claudeLimitListeners = new Set<(limits: VendorRateLimits) => void>();
+
+/** Called whenever the account-wide Claude limits change, so open views can be told. */
+export function onClaudeRateLimitsChanged(listener: (limits: VendorRateLimits) => void): () => void {
+  claudeLimitListeners.add(listener);
+  return () => claudeLimitListeners.delete(listener);
+}
+
+function claudeRateLimitsChanged(): void {
+  for (const listener of claudeLimitListeners) {
+    try {
+      listener(cachedClaudeRateLimits);
+    } catch (err) {
+      console.warn('[subscriptions] rate limit listener failed:', err);
+    }
+  }
+}
+
+/** A reset time the way `claude /usage` writes it: "Oct 4 at 3:30pm (Asia/Calcutta)". */
+export function formatResetTime(ms: number, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone })
+      .formatToParts(new Date(ms))
+      .map((p) => [p.type, p.value])
+  );
+  return `${parts.month} ${parts.day} at ${parts.hour}:${parts.minute}${String(parts.dayPeriod).toLowerCase()} (${timeZone})`;
+}
 
 // Trigger background refresh on startup
 setTimeout(() => {
@@ -263,7 +295,9 @@ export function refreshClaudeRateLimitsAsync(): Promise<VendorRateLimits> {
       return resolve(cachedClaudeRateLimits);
     }
     isRefreshingClaudeLimits = true;
-    exec('claude -p "/usage"', { timeout: 15000 }, (error, stdout) => {
+    lastClaudeProbeAt = Date.now();
+    // CODEPIT_CLAUDE_USAGE_CMD swaps in another command that prints the same report (tests use a stub)
+    exec(process.env.CODEPIT_CLAUDE_USAGE_CMD || 'claude -p "/usage"', { timeout: 15000 }, (error, stdout) => {
       isRefreshingClaudeLimits = false;
       if (!error && stdout) {
         try {
@@ -274,6 +308,7 @@ export function refreshClaudeRateLimitsAsync(): Promise<VendorRateLimits> {
               ...parsed,
               updatedAt: Date.now(),
             };
+            claudeRateLimitsChanged();
           }
         } catch {
           // ignore
@@ -284,6 +319,11 @@ export function refreshClaudeRateLimitsAsync(): Promise<VendorRateLimits> {
   });
 }
 
+/**
+ * A rate-limit event from the Claude agent, sent with most turns. It names a window and its
+ * reset time, and carries a percentage only some of the time (typically near a limit), so
+ * only what it actually says is taken; a turn having run is also the cue to re-read the rest.
+ */
 export function updateClaudeRateLimitsFromSdk(info: any): void {
   if (!info || typeof info !== 'object') return;
   const util = typeof info.utilization === 'number'
@@ -292,40 +332,43 @@ export function updateClaudeRateLimitsFromSdk(info: any): void {
 
   let resetsFormatted: string | null = null;
   if (info.resetsAt) {
-    try {
-      const ts = typeof info.resetsAt === 'number' ? (info.resetsAt > 1e11 ? info.resetsAt : info.resetsAt * 1000) : Date.parse(info.resetsAt);
-      resetsFormatted = new Date(ts).toLocaleString();
-    } catch {
-      resetsFormatted = String(info.resetsAt);
-    }
+    const ts = typeof info.resetsAt === 'number' ? (info.resetsAt > 1e11 ? info.resetsAt : info.resetsAt * 1000) : Date.parse(info.resetsAt);
+    resetsFormatted = Number.isFinite(ts) ? formatResetTime(ts) : String(info.resetsAt);
   }
 
-  if (info.rateLimitType === 'five_hour') {
-    cachedClaudeRateLimits.fiveHour = {
-      utilization: util !== undefined ? util : (cachedClaudeRateLimits.fiveHour?.utilization ?? 0),
-      resetsAt: resetsFormatted || cachedClaudeRateLimits.fiveHour?.resetsAt,
-    };
-  } else if (info.rateLimitType === 'seven_day') {
-    cachedClaudeRateLimits.weeklyAll = {
-      utilization: util !== undefined ? util : (cachedClaudeRateLimits.weeklyAll?.utilization ?? 0),
-      resetsAt: resetsFormatted || cachedClaudeRateLimits.weeklyAll?.resetsAt,
-    };
-  } else if (info.rateLimitType?.startsWith('seven_day_')) {
-    const modelName = info.rateLimitType.replace('seven_day_', '');
+  let changed = false;
+  const type: string | undefined = info.rateLimitType;
+  if (type === 'five_hour' || type === 'seven_day') {
+    const key = type === 'five_hour' ? 'fiveHour' : 'weeklyAll';
+    const prev = cachedClaudeRateLimits[key];
+    if (util !== undefined || prev) {
+      cachedClaudeRateLimits[key] = {
+        utilization: util ?? prev!.utilization,
+        resetsAt: resetsFormatted || prev?.resetsAt,
+      };
+      changed = util !== undefined && util !== prev?.utilization;
+    }
+  } else if (type?.startsWith('seven_day_') && !type.includes('overage') && util !== undefined) {
+    const modelName = type.replace('seven_day_', '');
     const existing = (cachedClaudeRateLimits.weeklyModels || []).filter(m => m.name.toLowerCase() !== modelName.toLowerCase());
     existing.push({
       name: modelName.charAt(0).toUpperCase() + modelName.slice(1),
-      utilization: util !== undefined ? util : 0,
+      utilization: util,
       resetsAt: resetsFormatted,
     });
     cachedClaudeRateLimits.weeklyModels = existing;
+    changed = true;
   }
-  cachedClaudeRateLimits.updatedAt = Date.now();
+  if (changed) {
+    cachedClaudeRateLimits.updatedAt = Date.now();
+    claudeRateLimitsChanged();
+  }
+  getClaudeRateLimits();
 }
 
+/** The account-wide Claude limits, re-read in the background when the last read is old. */
 export function getClaudeRateLimits(): VendorRateLimits {
-  const now = Date.now();
-  if (now - (cachedClaudeRateLimits.updatedAt || 0) > 180000) {
+  if (Date.now() - lastClaudeProbeAt > CLAUDE_PROBE_EVERY_MS) {
     refreshClaudeRateLimitsAsync().catch(() => {});
   }
   return cachedClaudeRateLimits;

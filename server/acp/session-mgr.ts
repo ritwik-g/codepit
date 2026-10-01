@@ -12,10 +12,10 @@ import { describeElicitationAnswer, validateElicitationContent } from './elicita
 import { HANDOFF_SUMMARY_PROMPT, autoCompactDecision, capSummary, contextWindowFor, latestCompaction, readAutoCompactDefault, writeAutoCompactDefault } from '../compaction.js';
 import { ptyManager } from '../pty-manager.js';
 import { getUploadsDir } from '../paths.js';
-import { getClaudeRateLimits, updateClaudeRateLimitsFromSdk } from '../subscriptions.js';
+import { getClaudeRateLimits, onClaudeRateLimitsChanged, updateClaudeRateLimitsFromSdk } from '../subscriptions.js';
 import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, rememberAgentOptions, resolveModelValue } from './agent-options.js';
 import { logQueueEvent } from '../queue-log.js';
-import { appendSubagentText, completeAsyncSubagent, endAgentTasks, stopAgentTask, stopTranscriptWatchers, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
+import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopTranscriptWatchers, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
 import type { AcpSession, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
@@ -189,6 +189,7 @@ export class SessionManager extends EventEmitter {
   private autoCompactAfterBackground = new Map<string, string | undefined>();
   /** Whether the sidebar was last told a session is working in the background. */
   private inBackground = new Map<string, boolean>();
+  private unsubscribeRateLimits?: () => void;
 
   constructor() {
     super();
@@ -258,6 +259,9 @@ export class SessionManager extends EventEmitter {
 
   init(): void {
     store.init();
+    if (!this.unsubscribeRateLimits) {
+      this.unsubscribeRateLimits = onClaudeRateLimitsChanged((rateLimits) => this.emit('claudeRateLimits', rateLimits));
+    }
     // Recover any orphaned 'working' or 'crashed' sessions left behind by server restarts or crashes
     const sessions = store.getAll();
     for (const session of sessions) {
@@ -312,8 +316,24 @@ export class SessionManager extends EventEmitter {
       }
 
       const host = this.activeHosts.get(session.id);
+      if (session.state === 'working' && !host) {
+        // The last run of CodePit ended with this turn still going: say so where the reply stops
+        const now = Date.now();
+        session.turns.push({
+          id: `sys-${now}-interrupted`,
+          role: 'system',
+          content: resumableSessionId(session)
+            ? 'CodePit stopped while this turn was running, so the agent stopped too. Your next message continues the same agent session; ask it to carry on.'
+            : 'CodePit stopped while this turn was running, so the agent stopped too. Your next message starts the agent again with a summary of this conversation.',
+          timestamp: now,
+        });
+      }
       if ((session.state === 'working' && (!host || !host.isTurnInFlight)) || session.state === 'crashed') {
         session.state = 'needs_you';
+        sessionChanged = true;
+      }
+      // A stop before this fix could record a subagent that had already finished as stopped
+      if (settleEndedSubagents(session, true).length > 0) {
         sessionChanged = true;
       }
       // No agent survives a server restart, so a stored approval request or form can never be answered
@@ -452,7 +472,9 @@ export class SessionManager extends EventEmitter {
       s.agentId.toLowerCase().includes('anthropic') ||
       (s.model && s.model.toLowerCase().includes('claude'))
     ) {
-      s.rateLimits = s.rateLimits || getClaudeRateLimits();
+      // Plan limits are account-wide and move with every session: the live numbers, never the
+      // copy saved with this session when it last heard from its agent
+      s.rateLimits = getClaudeRateLimits();
     }
     s.isAgentRunning = this.activeHosts.has(s.id);
     s.canSteer = Boolean(this.activeHosts.get(s.id)?.supportsSteering);
@@ -983,16 +1005,8 @@ export class SessionManager extends EventEmitter {
       }
     });
 
-    host.on('rateLimitUpdate', (info: any) => {
-      updateClaudeRateLimitsFromSdk(info);
-      const s = store.get(session.id);
-      if (s) {
-        s.rateLimits = getClaudeRateLimits();
-        store.save(s);
-        this.emit('sessionStream', { sessionId: s.id, type: 'rateLimits', rateLimits: s.rateLimits });
-        this.emit('sessionsUpdated', this.listSessions());
-      }
-    });
+    // Open views hear about the new numbers through onClaudeRateLimitsChanged (see init)
+    host.on('rateLimitUpdate', (info: any) => updateClaudeRateLimitsFromSdk(info));
 
     host.on('error', (err) => {
       console.warn(`[session-mgr] Agent error on session ${session.id}:`, err);
@@ -2333,7 +2347,8 @@ function readTaskOutput(file: string | undefined): string | undefined {
 
 /** Mark background work still running as stopped: it cannot outlive the agent process. */
 function endBackgroundWork(s: AcpSession, reason: string): boolean {
-  let changed = false;
+  // A subagent that had already finished, unnoticed, is completed rather than stopped
+  let changed = settleEndedSubagents(s).length > 0;
   for (const turn of s.turns) {
     for (const call of turn.toolCalls || []) {
       if (call.background && (call.backgroundState ?? 'running') === 'running') {

@@ -74,6 +74,14 @@ export function setupWebSockets(): (server: Server) => void {
   devices.on('pairingRequest', (request) => toLocal({ type: 'pairingRequest', request }));
   devices.on('changed', () => toLocal({ type: 'devicesChanged' }));
 
+  // The account-wide Claude plan limits changed; every open Usage view shows them
+  sessionManager.on('claudeRateLimits', (rateLimits) => {
+    const msg = JSON.stringify({ type: 'claudeRateLimits', rateLimits });
+    for (const ws of sessionClients) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+    }
+  });
+
   // Relay session events to all active connected web clients
   sessionManager.on('sessionsUpdated', (sessions) => {
     const msg = JSON.stringify({ type: 'sessionsUpdated', sessions });
