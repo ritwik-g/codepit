@@ -6,6 +6,8 @@
  *   build/icon.icns                every macOS size, 16 to 1024 incl. @2x
  *   web/public/apple-touch-icon.png  180 px, full bleed (iOS rounds it itself)
  *   web/public/icon-192.png, icon-512.png  the same, for the web app manifest (Android)
+ *   web/public/icon-maskable-192.png, icon-maskable-512.png  square, orange to the
+ *                                  edges, for Android's own icon mask
  *
  * Every size comes from build/icon.svg. web/public/favicon.svg is the same
  * drawing cropped to the rounded square without its shadow, kept by hand.
@@ -45,6 +47,21 @@ try {
   render(bleed, 180, 'web/public/apple-touch-icon.png');
   render(bleed, 192, 'web/public/icon-192.png');
   render(bleed, 512, 'web/public/icon-512.png');
+
+  // Android masks home-screen icons to its own shape. Given an icon without
+  // purpose "maskable" it shrinks it onto a white tile instead, so this one fills
+  // the whole square with the orange and keeps the glyph inside the safe zone,
+  // the centre circle of 40% radius (the glyph reaches 322 px from the centre).
+  const maskable = path.join(work, 'maskable.svg');
+  writeFileSync(
+    maskable,
+    readFileSync(FULL, 'utf8')
+      .replace('viewBox="0 0 1024 1024"', 'viewBox="62 62 900 900"')
+      .replace(/<use [^>]*filter="url\(#fShadow\)"><\/use>/, '<rect width="1024" height="1024" fill="url(#gOrange)"></rect>')
+      .replace(/<use [^>]*stroke="url\(#gHl\)"[^>]*><\/use>/, ''),
+  );
+  render(maskable, 192, 'web/public/icon-maskable-192.png');
+  render(maskable, 512, 'web/public/icon-maskable-512.png');
 
   console.log('Wrote build/icon.png, build/icon.icns and the web icons in web/public');
 } finally {
