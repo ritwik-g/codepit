@@ -7,7 +7,7 @@ import { VendorIcon } from './VendorLogos';
 import { getModelMeta } from './AgentModelPicker';
 import { advertisedModelLabel } from '../effort';
 import { ApprovalPicker, EffortPicker } from './ComposerPickers';
-import { getSlashCommandsForAgent, filterSlashCommands } from '../slashCommands';
+import { getSlashCommandsForAgent, filterSlashCommands, findSlashToken } from '../slashCommands';
 import { SlashMenu, type SlashCategory } from './SlashMenu';
 import { ModelSwitcher } from './ModelSwitcher';
 import { QueuedPrompts } from './QueuedPrompts';
@@ -50,19 +50,36 @@ export const Composer: React.FC<{
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  // Where the caret is, so the menu follows the word being typed rather than the start of the message
+  const [caret, setCaret] = useState(0);
+  // The start of a /word the menu was closed on (Esc, a click away); it stays closed for that word
+  const [dismissedSlashAt, setDismissedSlashAt] = useState<number | null>(null);
   const [slashFilterCategory, setSlashFilterCategory] = useState<SlashCategory>('all');
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Where to put the caret once a text change made here has rendered
+  const pendingCaretRef = useRef<number | null>(null);
   const slashMenuRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   useEscapeLayer(showModelPicker, () => setShowModelPicker(false));
-  useEscapeLayer(showSlashMenu, () => setShowSlashMenu(false));
+  // ----------------------------------------------------------- Slash menu
+  const slashToken = useMemo(() => findSlashToken(promptText, caret), [promptText, caret]);
+  const showSlashMenu = slashToken !== null && slashToken.start !== dismissedSlashAt;
+  const closeSlashMenu = () => {
+    if (slashToken) setDismissedSlashAt(slashToken.start);
+  };
+
+  useEscapeLayer(showSlashMenu, closeSlashMenu);
+
+  // A new /word (or none) forgets the dismissal
+  useEffect(() => {
+    if (slashToken?.start !== dismissedSlashAt) setDismissedSlashAt(null);
+  }, [slashToken?.start]);
 
   useEffect(() => {
     setAttachments([]);
-    setShowSlashMenu(false);
+    setDismissedSlashAt(null);
     setSelectedSlashIndex(0);
   }, [session.id]);
 
@@ -74,21 +91,36 @@ export const Composer: React.FC<{
     ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * MAX_GROW))}px`;
   }, [promptText, inputRef]);
 
-  // ----------------------------------------------------------- Slash menu
+  useLayoutEffect(() => {
+    const pos = pendingCaretRef.current;
+    if (pos === null) return;
+    pendingCaretRef.current = null;
+    inputRef.current?.focus();
+    inputRef.current?.setSelectionRange(pos, pos);
+  }, [promptText, inputRef]);
+
+  /** Replace the message and put the caret at `pos`, before any further typing lands. */
+  const setPromptAndCaret = (next: string, pos: number) => {
+    pendingCaretRef.current = pos;
+    setPromptText(next);
+    setCaret(pos);
+  };
+
   const availableSlashCommands = useMemo(
     () => getSlashCommandsForAgent(session.agentId, session.agentCommands),
     [session.agentId, session.agentCommands]
   );
-  const slashQuery = useMemo(() => {
-    if (!promptText.startsWith('/')) return '';
-    const match = promptText.match(/^\/(\S*)/);
-    return match ? match[1] : '';
-  }, [promptText]);
+  const slashQuery = slashToken?.query ?? '';
   const filteredSlashCommands = useMemo(() => {
     let list = filterSlashCommands(availableSlashCommands, slashQuery);
+    // Mid-message a "/" is as likely a path as a command, so only names that start with what was typed
+    if (slashToken && slashToken.start > 0) {
+      const q = slashQuery.toLowerCase();
+      list = list.filter((c) => c.command.toLowerCase().startsWith(`/${q}`));
+    }
     if (slashFilterCategory !== 'all') list = list.filter((c) => c.category === slashFilterCategory);
     return list;
-  }, [availableSlashCommands, slashQuery, slashFilterCategory]);
+  }, [availableSlashCommands, slashQuery, slashFilterCategory, slashToken?.start]);
 
   useEffect(() => {
     if (selectedSlashIndex >= filteredSlashCommands.length) {
@@ -97,24 +129,16 @@ export const Composer: React.FC<{
   }, [filteredSlashCommands.length, selectedSlashIndex]);
 
   useEffect(() => {
-    if (promptText.startsWith('/') && !promptText.includes('\n')) {
-      setShowSlashMenu(true);
-    } else if (!promptText.startsWith('/') && showSlashMenu) {
-      setShowSlashMenu(false);
-    }
-  }, [promptText]);
-
-  useEffect(() => {
     if (!showSlashMenu) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (slashMenuRef.current && !slashMenuRef.current.contains(t) && inputRef.current && !inputRef.current.contains(t)) {
-        setShowSlashMenu(false);
+        closeSlashMenu();
       }
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [showSlashMenu, inputRef]);
+  }, [showSlashMenu, slashToken?.start, inputRef]);
 
   useEffect(() => {
     if (!showModelPicker) return;
@@ -129,15 +153,17 @@ export const Composer: React.FC<{
     };
   }, [showModelPicker, setShowModelPicker]);
 
+  /** Put the command in place of the /word being typed, keeping the rest of the message. */
   const handleSelectSlashCommand = async (cmd: SlashCommandItem) => {
-    setShowSlashMenu(false);
-    if (await runLocalCommand(cmd.command)) return;
-    const textToInsert = cmd.command + ' ';
-    setPromptText(textToInsert);
-    setTimeout(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(textToInsert.length, textToInsert.length);
-    }, 50);
+    const token = slashToken ?? { start: caret, end: caret };
+    const before = promptText.slice(0, token.start);
+    const after = promptText.slice(token.end);
+    // Commands CodePit runs itself (/compact, /model…) replace the message, so only when it holds nothing else
+    if (!before.trim() && !after.trim() && (await runLocalCommand(cmd.command))) return;
+    const inserted = /^\s/.test(after) ? cmd.command : cmd.command + ' ';
+    const next = before + inserted + after;
+    const pos = before.length + inserted.length + (inserted === cmd.command ? 1 : 0);
+    setPromptAndCaret(next, pos);
   };
 
   // ---------------------------------------------------------- Attachments
@@ -199,7 +225,6 @@ export const Composer: React.FC<{
   // ----------------------------------------------------------------- Send
   const handleSendPrompt = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    setShowSlashMenu(false);
     const text = promptText.trim();
     if ((!text && attachments.length === 0) || sending) return;
 
@@ -223,6 +248,12 @@ export const Composer: React.FC<{
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Cmd/Ctrl+Enter always sends what is typed, menu or not
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      handleSendPrompt();
+      return;
+    }
     if (showSlashMenu && filteredSlashCommands.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -244,7 +275,7 @@ export const Composer: React.FC<{
       }
       if (e.key === 'Escape') {
         e.preventDefault();
-        setShowSlashMenu(false);
+        closeSlashMenu();
         return;
       }
     }
@@ -254,10 +285,6 @@ export const Composer: React.FC<{
       return;
     }
     // Plain and Shift+Enter fall through to the textarea as a new line; only Cmd/Ctrl+Enter sends
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      handleSendPrompt();
-    }
   };
 
   const currentModelMeta = getModelMeta(session.model || 'sonnet');
@@ -296,7 +323,7 @@ export const Composer: React.FC<{
             onHover={setSelectedSlashIndex}
             onSelect={handleSelectSlashCommand}
             onClose={() => {
-              setShowSlashMenu(false);
+              closeSlashMenu();
               inputRef.current?.focus();
             }}
           />
@@ -362,7 +389,11 @@ export const Composer: React.FC<{
                 : `Message ${agentShort}, or type / for commands`
             }
             value={promptText}
-            onChange={(e) => setPromptText(e.target.value)}
+            onChange={(e) => {
+              setPromptText(e.target.value);
+              setCaret(e.target.selectionStart ?? e.target.value.length);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             disabled={sending}
@@ -412,9 +443,17 @@ export const Composer: React.FC<{
                 aria-expanded={showSlashMenu}
                 title={`Browse slash commands for ${agentShort} (or type /)`}
                 onClick={() => {
-                  setShowSlashMenu(!showSlashMenu);
-                  if (!showSlashMenu && !promptText.startsWith('/')) setPromptText('/');
-                  inputRef.current?.focus();
+                  if (showSlashMenu) {
+                    closeSlashMenu();
+                    inputRef.current?.focus();
+                    return;
+                  }
+                  // Start a /word at the caret, after a space if it would otherwise join the word before it
+                  const before = promptText.slice(0, caret);
+                  const slash = before && !/\s$/.test(before) ? ' /' : '/';
+                  const next = before + slash + promptText.slice(caret);
+                  const pos = before.length + slash.length;
+                  setPromptAndCaret(next, pos);
                 }}
               >
                 /

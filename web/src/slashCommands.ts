@@ -410,3 +410,19 @@ export function filterSlashCommands(commands: SlashCommandItem[], query: string)
     return cmdName.includes(clean) || label.includes(clean) || desc.includes(clean) || source.includes(clean);
   });
 }
+
+/**
+ * The /word the caret is in, if any: a "/" at the start of the message or after
+ * whitespace, followed by the non-space characters around the caret. A second "/"
+ * in the word (a path like /usr/bin) means it isn't a command.
+ */
+export function findSlashToken(text: string, caret: number): { start: number; end: number; query: string } | null {
+  let start = caret;
+  while (start > 0 && !/\s/.test(text[start - 1])) start--;
+  if (text[start] !== '/' || start === caret) return null;
+  let end = caret;
+  while (end < text.length && !/\s/.test(text[end])) end++;
+  const query = text.slice(start + 1, end);
+  if (query.includes('/')) return null;
+  return { start, end, query };
+}
