@@ -9,6 +9,7 @@ import { ptyManager } from '../pty-manager.js';
 import { appEnv } from '../env.js';
 import type { AgentCommand, AgentDescriptor, AgentOptions, AsyncTaskUpdate, ElicitationAction, ElicitationValue, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionMcpInfo, ToolCallRecord, TokenUsage } from '../types.js';
 import { appliesTo, listMcpServers, resolveSessionMcpServers } from '../mcp/config.js';
+import { syncAgyMcpQuietly } from '../mcp/agy-sync.js';
 import { effortToSend, launchModelValue, parseAgentOptions, resolveModelValue } from './agent-options.js';
 import { parseElicitationFields } from './elicitation.js';
 
@@ -823,6 +824,22 @@ export class AcpClientHost extends EventEmitter {
       // Start without them rather than fail the session, and say why in the session header
       console.error(`[client-host] MCP servers not loaded: ${err.message}`);
       return { servers: [], info: { attached: [], skipped: [{ name: 'mcp.json', reason: err.message }] } };
+    }
+    if (this.agent.mcpSupport?.via === 'agy-settings') {
+      // The agent reads its servers from agy's settings: bring them up to date before it starts
+      const inScope = configured.filter((s) => s.enabled && appliesTo(s, this.agent.id));
+      const status = syncAgyMcpQuietly(configured);
+      if (!status || status.error || !status.available) {
+        const reason = status?.error || (status && !status.available ? 'Antigravity is not installed here' : "Couldn't update agy's MCP settings");
+        return { servers: [], info: { attached: [], skipped: inScope.map((s) => ({ name: s.name, reason })) } };
+      }
+      return {
+        servers: [],
+        info: {
+          attached: status.entries.filter((e) => e.state === 'synced').map((e) => e.name),
+          skipped: status.entries.filter((e) => e.state !== 'synced').map((e) => ({ name: e.name, reason: e.reason || '' })),
+        },
+      };
     }
     if (this.agent.mcpSupport && this.agent.mcpSupport.transports.length === 0) {
       // The agent would accept the list and ignore it; say so instead of implying the tools are there

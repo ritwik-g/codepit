@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../api';
-import type { AgentDescriptor, EcosystemReport, McpPreset, McpProbeResult, McpServer, McpServerInput } from '../../types';
+import type { AgentDescriptor, AgySyncEntry, AgySyncStatus, EcosystemReport, McpPreset, McpProbeResult, McpServer, McpServerInput } from '../../types';
 import { Badge, Button, EmptyState, Icon, Segmented, Spinner, Switch, Tabs, type IconName } from '../../ui';
 import { Modal } from '../Modal';
 import { Menu } from '../Menu';
-import { AgentFitBadges, CopyButton, McpServerForm, TRANSPORT_LABEL, agentFit, agyCommand } from './McpServerForm';
+import { AgentFitBadges, McpServerForm, TRANSPORT_LABEL, agentFit } from './McpServerForm';
 import { McpCatalog } from './McpCatalog';
 import { McpEcosystems } from './McpEcosystems';
 import '../../styles/mcp.css';
@@ -82,14 +82,14 @@ const ServerRow: React.FC<{
   probe?: Probe;
   /** Agents that already configure an MCP server with this name themselves. */
   clashes: string[];
+  /** Where this server stands in agy's settings, when it is meant for Antigravity. */
+  agy?: AgySyncEntry | { state: 'error'; reason: string };
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
   onEdit: () => void;
   onDelete: () => void;
-}> = ({ server, agents, probe, clashes, onToggle, onTest, onEdit, onDelete }) => {
+}> = ({ server, agents, probe, clashes, agy, onToggle, onTest, onEdit, onDelete }) => {
   const fits = agentFit(server, agents);
-  const agy = fits.some((f) => f.agent.id === 'antigravity') ? agyCommand(server) : null;
-  const [showAgy, setShowAgy] = useState(false);
   return (
     <li className={`mcp-server ${server.enabled ? '' : 'is-off'}`}>
       <span className="mcp-server-icon" aria-hidden>
@@ -106,22 +106,12 @@ const ServerRow: React.FC<{
         </div>
         <div className="mcp-server-fit">
           <AgentFitBadges fits={fits} />
-          {agy && (
-            <button type="button" className="mcp-linkbtn" onClick={() => setShowAgy(!showAgy)} aria-expanded={showAgy}>
-              Use with Antigravity
-            </button>
-          )}
         </div>
-        {showAgy && agy && (
-          <div className="mcp-note tone-info">
-            <Icon name="info" size={13} />
+        {agy && agy.state !== 'synced' && (
+          <div className="mcp-note tone-warn">
+            <Icon name="alert" size={13} />
             <div>
-              Antigravity reads MCP servers from its own settings. Run this once in a terminal to add it there
-              {agy.includes('<') ? ', after replacing the <PLACEHOLDERS> with the real values' : ''}:
-              <div className="mcp-agy">
-                <code className="mcp-agy-cmd">{agy}</code>
-                <CopyButton text={agy} label="Copy command" />
-              </div>
+              Not in Antigravity's settings. {agy.reason}
             </div>
           </div>
         )}
@@ -168,6 +158,7 @@ export const McpModal: React.FC<{
   const [tab, setTab] = useState<McpTab>(initialTab);
   const [addMode, setAddMode] = useState<'catalog' | 'custom'>('catalog');
   const [servers, setServers] = useState<McpServer[] | null>(null);
+  const [agyStatus, setAgyStatus] = useState<AgySyncStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [presets, setPresets] = useState<McpPreset[] | null>(null);
   const [presetError, setPresetError] = useState<string | null>(null);
@@ -190,10 +181,27 @@ export const McpModal: React.FC<{
     if (servers) reportServers.current(servers);
   }, [servers]);
 
+  // The server syncs agy's settings after every change; read back where each server landed
+  const listLoaded = useRef(false);
+  useEffect(() => {
+    if (!servers) return;
+    if (!listLoaded.current) {
+      listLoaded.current = true;
+      return;
+    }
+    api
+      .getMcpServers()
+      .then((r) => setAgyStatus(r.agy ?? null))
+      .catch(() => {});
+  }, [servers]);
+
   useEffect(() => {
     api
       .getMcpServers()
-      .then((r) => setServers(r.servers))
+      .then((r) => {
+        setServers(r.servers);
+        setAgyStatus(r.agy ?? null);
+      })
       .catch((err) => setLoadError(err.message));
     api
       .getMcpPresets()
@@ -228,6 +236,13 @@ export const McpModal: React.FC<{
     } catch (err: any) {
       setActionError(err?.message || 'Something went wrong');
     }
+  };
+
+  /** Where a server meant for Antigravity stands in agy's settings; nothing for the others. */
+  const agyFor = (s: McpServer): AgySyncEntry | { state: 'error'; reason: string } | undefined => {
+    if (!agyStatus?.available || !s.enabled || !agentFit(s, agents).some((f) => f.agent.id === 'antigravity')) return undefined;
+    if (agyStatus.error) return { state: 'error', reason: agyStatus.error };
+    return agyStatus.entries.find((e) => e.serverId === s.id);
   };
 
   // Latest test run per server; an edit or removal bumps it so an older answer is dropped
@@ -351,6 +366,7 @@ export const McpModal: React.FC<{
                         replace(r.server);
                       })
                     }
+                    agy={agyFor(s)}
                     onTest={() => test(s)}
                     onEdit={() => setEditing(s)}
                     onDelete={() => setConfirmDelete(s)}

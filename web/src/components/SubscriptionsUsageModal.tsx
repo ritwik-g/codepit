@@ -88,12 +88,12 @@ const VENDORS: VendorSpec[] = [
     name: 'Antigravity and Gemini',
     maker: 'Google',
     accountMode: 'desktop',
-    accountModeLabel: 'Antigravity desktop',
-    accountModePhrase: 'the Antigravity desktop account',
+    accountModeLabel: 'Antigravity sign-in',
+    accountModePhrase: 'the account agy is signed in to',
     keyLabel: 'Gemini API key',
     keyPlaceholder: 'AIzaSy…',
     envVar: 'GEMINI_API_KEY',
-    loginHint: 'To switch Google accounts, change the account in the Antigravity desktop app.',
+    loginHint: 'Antigravity runs through its agy CLI. To switch Google accounts, sign in again in agy (run agy in a terminal).',
     note: 'Antigravity manages its 5-hour and weekly quotas itself. Its status bar shows what is left.',
   },
 ];
@@ -289,8 +289,8 @@ const VendorCard: React.FC<{
     rows.push(['Sign-in', d.authMode ? `ChatGPT OAuth (${d.authMode})` : 'ChatGPT OAuth']);
     rows.push(['Credentials', <code className="usg-mono">{d.configPath || '~/.codex/auth.json'}</code>]);
   } else {
-    rows.push(['Daemon', <code className="usg-mono">{d.agentApiPath || '~/.gemini/antigravity/bin/agentapi'}</code>]);
-    rows.push(['App data', <code className="usg-mono">~/.gemini/antigravity</code>]);
+    rows.push(['CLI', d.agyFound === false ? 'agy not found' : <code className="usg-mono">{d.agyPath || '~/.local/bin/agy'}</code>]);
+    rows.push(['App data', <code className="usg-mono">{d.appDataDir || '~/.gemini/antigravity-cli'}</code>]);
   }
 
   const showLimits = (spec.key === 'anthropic' || spec.key === 'openai') && (hasRateLimits(sub?.rateLimits) || mode !== 'api_key');

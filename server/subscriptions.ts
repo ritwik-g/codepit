@@ -464,24 +464,26 @@ export function getVendorSubscriptions(): Record<'anthropic' | 'openai' | 'googl
     },
   };
 
-  // 3. Google / Antigravity / Gemini
-  const hasAgentApi = fs.existsSync(path.join(home, '.gemini', 'antigravity', 'bin', 'agentapi'));
+  // 3. Google / Antigravity / Gemini: Antigravity runs through its agy CLI and the account agy is signed in to.
+  // ('desktop' stays the stored name of that mode, from when it went through the desktop app.)
+  const agyPath = process.env.AGY_PATH || path.join(home, '.local', 'bin', 'agy');
+  const hasAgy = fs.existsSync(agyPath);
   const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || creds.geminiApiKey);
-  const googlePreferredMode = creds.preferredAuthMode?.google || (hasAgentApi ? 'desktop' : 'api_key');
+  const googlePreferredMode = creds.preferredAuthMode?.google || (hasAgy ? 'desktop' : 'api_key');
 
   const googleInfo: VendorSubscriptionInfo = {
     vendorId: 'google',
     vendorName: 'Google Antigravity & Gemini',
     authMode: googlePreferredMode,
-    planName: googlePreferredMode === 'desktop' ? 'Google Antigravity Desktop' : 'Google AI Studio / Vertex AI',
-    status: hasAgentApi ? 'active' : (hasGeminiKey ? 'configured' : 'unconfigured'),
+    planName: googlePreferredMode === 'desktop' ? 'Antigravity (agy CLI)' : 'Google AI Studio / Vertex AI',
+    status: hasAgy ? 'active' : (hasGeminiKey ? 'configured' : 'unconfigured'),
     apiKeyConfigured: hasGeminiKey,
     apiKeyMasked: maskApiKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || creds.geminiApiKey),
-    reauthCommand: 'Open Antigravity Desktop App (/Applications/Antigravity.app)',
+    reauthCommand: 'Run agy in a terminal and sign in',
     details: {
-      daemonFound: hasAgentApi,
-      agentApiPath: '~/.gemini/antigravity/bin/agentapi',
-      appDataDir: path.join(home, '.gemini', 'antigravity'),
+      agyFound: hasAgy,
+      agyPath: agyPath.startsWith(home) ? `~${agyPath.slice(home.length)}` : agyPath,
+      appDataDir: '~/.gemini/antigravity-cli',
     },
   };
 

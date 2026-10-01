@@ -34,7 +34,8 @@ export interface AgentDescriptor {
   availableModels?: string[];
   slashCommands?: SlashCommandItem[];
   /** MCP transports the agent takes in `session/new`; empty when it can't take any. */
-  mcpSupport?: { transports: McpTransport[]; note?: string };
+  /** `via: 'agy-settings'`: the agent reads MCP servers from its own settings file, which CodePit keeps in step. */
+  mcpSupport?: { transports: McpTransport[]; note?: string; via?: 'agy-settings' };
   /** Effort levels to offer before the agent has reported its own; empty when it has no effort setting. */
   efforts?: ConfigChoice[];
   /** What the agent last advertised per model, keyed by model id. */
@@ -547,6 +548,22 @@ export interface McpServer {
 }
 
 export type McpServerInput = Omit<McpServer, 'id' | 'createdAt' | 'updatedAt'>;
+
+/** How one server stands in agy's own MCP settings, which CodePit keeps in step for Antigravity. */
+export interface AgySyncEntry {
+  serverId: string;
+  name: string;
+  state: 'synced' | 'skipped' | 'conflict';
+  reason?: string;
+}
+
+export interface AgySyncStatus {
+  available: boolean;
+  file: string;
+  entries: AgySyncEntry[];
+  error?: string;
+  syncedAt?: number;
+}
 
 /** Placeholder the API sends instead of a secret; sending it back keeps the saved value. */
 export const MCP_MASK = '••••••••';

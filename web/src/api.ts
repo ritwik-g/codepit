@@ -17,8 +17,7 @@ import type {
   ThinkingEffort,
   UsageReport,
   UserAnnotations,
-  VendorSubscriptionInfo,
-} from './types';
+  VendorSubscriptionInfo, AgySyncStatus } from './types';
 
 /** Thrown for a non-2xx reply, with the status so callers need not parse the message. */
 export class HttpError extends Error {
@@ -54,7 +53,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  getMcpServers: () => request<{ servers: McpServer[] }>('/api/mcp/servers'),
+  getMcpServers: () => request<{ servers: McpServer[]; agy?: AgySyncStatus }>('/api/mcp/servers'),
   createMcpServer: (data: McpServerInput) =>
     request<{ server: McpServer }>('/api/mcp/servers', { method: 'POST', body: JSON.stringify(data) }),
   addMcpPreset: (presetId: string, inputs: Record<string, string>, scope: string) =>

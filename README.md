@@ -98,6 +98,8 @@ as they would in your terminal, using your existing logins.
 - **Test connection** runs the MCP handshake and lists the server's tools.
 - **One-click catalog:** Filesystem, GitHub, Memory, Brave Search, SQLite,
   PostgreSQL.
+- **Antigravity too:** its servers go into `agy`'s own MCP settings, kept in step
+  with the dialog (see [Supported agents](#supported-agents)).
 - **Read-only view of what each agent loads by itself:** Claude Code plugins
   and skills, Codex plugins and skills, Antigravity plugins and MCP servers.
 
@@ -235,10 +237,14 @@ npm run smoke
 | **Built-in Demo Agent** | `server/agents/mock-agent.ts`; hidden unless `CODEPIT_ENABLE_MOCK=1` | None |
 
 **Antigravity** can't ask for approval in headless mode, so what it may do is set
-up front by the approval mode (Read only, Accept edits, Plan, Full access). It
-reads MCP servers from its own settings, so the MCP dialog offers the matching
-`agy mcp add` command instead. `agy` only works in folders listed as trusted in
-its own settings.
+up front by the approval mode (Read only, Accept edits, Plan, Full access). `agy`
+takes no MCP servers per run; it reads them from one file,
+`~/.gemini/config/mcp_config.json`, which every `agy` run and the Antigravity
+desktop app share. CodePit keeps its servers for Antigravity in that file: it
+adds, updates and removes only the entries it wrote, leaves a different server
+with the same name alone and says so, skips SSE servers and ones that use
+`${workspace}`, and makes the file owner-only because it then holds tokens.
+`agy` only works in folders listed as trusted in its own settings.
 
 **Other agents:** anything that speaks ACP over stdio can be added to
 `server/agents/registry.ts`.

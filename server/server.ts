@@ -1,4 +1,5 @@
 import express from 'express';
+import { syncAgyMcpQuietly } from './mcp/agy-sync.js';
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -55,6 +56,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   removeLegacyToken();
   setAppKey(opts.appKey);
   loadStoredCredentials();
+  // Changes made while CodePit was closed, on either side, are reconciled once at start
+  syncAgyMcpQuietly();
 
   const app = express();
 

@@ -31,7 +31,8 @@ export interface AgentDescriptor {
   availableModels?: string[];
   slashCommands?: SlashCommandItem[];
   /** MCP transports the agent takes in `session/new`; empty when it can't take any. */
-  mcpSupport?: { transports: McpTransport[]; note?: string };
+  /** `via: 'agy-settings'`: the agent reads MCP servers from its own settings file, which CodePit keeps in step. */
+  mcpSupport?: { transports: McpTransport[]; note?: string; via?: 'agy-settings' };
   /** Effort levels to offer before the agent has reported its own; empty when it has no effort setting. */
   efforts?: ConfigChoice[];
   /** Ask the agent to run each subagent in a session of its own (AIR nativeSubagentSessions), so its work streams live. */

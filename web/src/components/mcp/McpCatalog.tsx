@@ -60,8 +60,7 @@ const PresetCard: React.FC<{
       </div>
       <p className="mcp-preset-desc">{preset.description}</p>
       <div className="mcp-preset-foot">
-        {/* Antigravity's gap applies to every preset, so the catalog says it once at the top */}
-        <AgentFitBadges fits={agentFit({ transport: preset.transport, scope: 'all' }, agents).filter((f) => !f.ok && f.agent.id !== 'antigravity')} />
+        <AgentFitBadges fits={agentFit({ transport: preset.transport, scope: 'all' }, agents).filter((f) => !f.ok)} />
         <a className="mcp-link" href={preset.docsUrl} target="_blank" rel="noreferrer">
           Docs <Icon name="external" size={11} />
         </a>
@@ -150,15 +149,14 @@ export const McpCatalog: React.FC<{
       </div>
     );
   }
-  const antigravity = agents.find((a) => a.id === 'antigravity' && a.mcpSupport?.transports.length === 0);
+  const antigravity = agents.find((a) => a.id === 'antigravity' && a.mcpSupport?.via === 'agy-settings');
   return (
     <>
       {antigravity && (
         <div className="mcp-note tone-info">
           <Icon name="info" size={13} />
           <div>
-            Claude Code and Codex get these servers in every new session. {withCode(antigravity.mcpSupport?.note)} Each server you add shows the
-            command for it.
+            Claude Code and Codex get these servers in every new session. {withCode(antigravity.mcpSupport?.note)}
           </div>
         </div>
       )}

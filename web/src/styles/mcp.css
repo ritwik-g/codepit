@@ -122,28 +122,6 @@
   color: var(--accent);
 }
 
-/* The copyable `agy mcp add` line */
-.mcp-agy {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
-}
-
-.mcp-agy-cmd {
-  flex: 1;
-  min-width: 0;
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--code-bg);
-  color: var(--code-text);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
 /* ============================================================ Installed */
 .mcp-summary {
   display: flex;

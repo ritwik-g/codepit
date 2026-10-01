@@ -38,48 +38,6 @@ export function agentFit(server: Pick<McpServer, 'transport' | 'scope'>, agents:
 export const withCode = (text?: string): React.ReactNode =>
   text?.split('`').map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part));
 
-const shellQuote = (s: string) => (/^[A-Za-z0-9_/.:=@%+,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
-
-/**
- * The `agy mcp add` line that gives Antigravity the same server. Masked secrets
- * become <KEY> placeholders; the browser never has the real values.
- */
-export function agyCommand(s: Pick<McpServer, 'name' | 'transport' | 'command' | 'args' | 'env' | 'url' | 'headers'>): string | null {
-  if (s.transport === 'sse') return null;
-  const value = (k: string, v: string) => v.split(MCP_MASK).join(`<${k}>`);
-  const parts = ['agy', 'mcp', 'add'];
-  for (const [k, v] of Object.entries(s.env ?? {})) parts.push('--env', shellQuote(`${k}=${value(k, v)}`));
-  for (const [k, v] of Object.entries(s.headers ?? {})) parts.push('--header', shellQuote(`${k}: ${value(k, v)}`));
-  parts.push(shellQuote(s.name));
-  if (s.transport === 'stdio') {
-    const rest = [s.command ?? '', ...(s.args ?? [])];
-    if (rest.some((a) => a.startsWith('-'))) parts.push('--');
-    parts.push(...rest.map((a) => shellQuote(value('SECRET', a))));
-  } else {
-    parts.push(shellQuote(value('SECRET', s.url ?? '')));
-  }
-  return parts.join(' ');
-}
-
-export const CopyButton: React.FC<{ text: string; label?: string }> = ({ text, label = 'Copy' }) => {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      size="sm"
-      variant="ghost"
-      icon={copied ? 'check' : 'copy'}
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(() => {
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1500);
-        });
-      }}
-    >
-      {copied ? 'Copied' : label}
-    </Button>
-  );
-};
-
 // ------------------------------------------------------------------ key/value rows
 
 type Row = { key: string; value: string };
@@ -181,7 +139,6 @@ export const McpServerForm: React.FC<{
   };
   const fits = agentFit(data, agents);
   const blocked = fits.filter((f) => !f.ok);
-  const agy = fits.some((f) => f.agent.id === 'antigravity') ? agyCommand(data) : null;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -305,12 +262,6 @@ export const McpServerForm: React.FC<{
                 <strong>{shortAgentName(f.agent)}</strong> won't get it. {withCode(f.reason)}
               </div>
             ))}
-            {agy && (
-              <div className="mcp-agy">
-                <code className="mcp-agy-cmd">{agy}</code>
-                <CopyButton text={agy} label="Copy command" />
-              </div>
-            )}
           </div>
         </div>
       )}

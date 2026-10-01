@@ -121,8 +121,9 @@ export const AGENT_REGISTRY: Record<string, AgentDescriptor> = {
     args: [path.join(__dirname, 'antigravity-agent.ts')],
     icon: 'gemini',
     mcpSupport: {
-      transports: [],
-      note: 'Antigravity reads MCP servers from its own settings. Add them there with `agy mcp add`.',
+      transports: ['stdio', 'http'],
+      via: 'agy-settings',
+      note: "Antigravity reads MCP servers from agy's own settings (~/.gemini/config/mcp_config.json), shared with every agy run and the desktop app. CodePit keeps its servers there for you.",
     },
     defaultModel: 'gemini-3.8-flash',
     availableModels: parseEnvModels(process.env.GEMINI_MODELS, defaultGeminiModels),

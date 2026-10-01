@@ -15,6 +15,7 @@ import {
 import { listPresets, presetToInput } from './presets.js';
 import { probeMcpServer } from './probe.js';
 import { inspectEcosystems } from './inspect.js';
+import { agySyncStatus, syncAgyMcpQuietly } from './agy-sync.js';
 
 export const mcpRouter = Router();
 
@@ -33,7 +34,16 @@ function checkScope(scope: unknown): void {
 }
 
 mcpRouter.get('/servers', (_req, res) => {
-  res.json({ servers: listMcpServers().map(toView) });
+  res.json({ servers: listMcpServers().map(toView), agy: agySyncStatus() });
+});
+
+// Every change is carried into agy's settings straight away, so Antigravity sees it next time it starts
+mcpRouter.use((req, res, next) => {
+  if (req.method === 'GET' || req.path.endsWith('/test')) return next();
+  res.on('finish', () => {
+    if (res.statusCode < 400) syncAgyMcpQuietly();
+  });
+  next();
 });
 
 mcpRouter.post('/servers', (req, res) => {
