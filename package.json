@@ -12,7 +12,7 @@
   },
   "main": "dist-electron/main.mjs",
   "scripts": {
-    "dev": "tsx watch --clear-screen=false server/cli.ts",
+    "dev": "CODEPIT_LOCALHOST=1 tsx watch --clear-screen=false server/cli.ts",
     "dev:web": "vite",
     "start": "tsx server/cli.ts",
     "build": "vite build",

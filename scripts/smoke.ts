@@ -16,12 +16,10 @@ async function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function httpGet(url: string, token?: string): Promise<{ status: number; body: string }> {
+// Loopback requests: trusted without pairing
+function httpGet(url: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const headers: Record<string, string> = {};
-    if (token) headers['x-codepit-token'] = token;
-
-    http.get(url, { headers }, (res) => {
+    http.get(url, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => resolve({ status: res.statusCode || 0, body: data }));
@@ -50,13 +48,6 @@ async function runSmokeTest() {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  let token = '';
-
-  serverProcess.stdout.on('data', (d) => {
-    const text = d.toString();
-    const m = text.match(/Token:\s+([a-f0-9]+)/);
-    if (m) token = m[1];
-  });
 
   serverProcess.stderr.on('data', (d) => {
     console.error(`[Server stderr] ${d.toString()}`);
@@ -69,7 +60,7 @@ async function runSmokeTest() {
     for (let i = 0; i < 20; i++) {
       await wait(300);
       try {
-        const res = await httpGet('http://127.0.0.1:7891/api/agents', token);
+        const res = await httpGet('http://127.0.0.1:7891/api/agents');
         if (res.status === 200) {
           started = true;
           break;
@@ -86,7 +77,7 @@ async function runSmokeTest() {
 
     // Test /api/agents
     console.log('   Testing GET /api/agents...');
-    const agentsRes = await httpGet('http://127.0.0.1:7891/api/agents', token);
+    const agentsRes = await httpGet('http://127.0.0.1:7891/api/agents');
     const parsedAgents = JSON.parse(agentsRes.body);
     console.log(`   Found ${parsedAgents.agents.length} agents: ${parsedAgents.agents.map((a: any) => a.id).join(', ')}`);
     if (!parsedAgents.agents || parsedAgents.agents.length === 0) {
@@ -95,13 +86,13 @@ async function runSmokeTest() {
 
     // Test /api/sessions
     console.log('   Testing GET /api/sessions...');
-    const sessionsRes = await httpGet('http://127.0.0.1:7891/api/sessions', token);
+    const sessionsRes = await httpGet('http://127.0.0.1:7891/api/sessions');
     const parsedSessions = JSON.parse(sessionsRes.body);
     console.log(`   Found ${parsedSessions.sessions.length} sessions (clean isolated store)`);
 
     // Test WebSocket connection
     console.log('   Testing WebSocket connection to ws://127.0.0.1:7891/ws...');
-    const ws = new WebSocket(`ws://127.0.0.1:7891/ws?token=${token}`);
+    const ws = new WebSocket(`ws://127.0.0.1:7891/ws`);
 
     const wsOpened = await new Promise<boolean>((resolve) => {
       ws.on('open', () => resolve(true));
@@ -152,7 +143,7 @@ async function runSmokeTest() {
       sock.on('error', () => resolve());
       setTimeout(() => { sock.destroy(); resolve(); }, 2000);
     });
-    const alive = await httpGet('http://127.0.0.1:7891/api/agents', token);
+    const alive = await httpGet('http://127.0.0.1:7891/api/agents');
     if (alive.status !== 200) throw new Error(`Server unhealthy after malformed Host upgrade (status ${alive.status})`);
     console.log('   ✅ Server survived malformed Host header');
 

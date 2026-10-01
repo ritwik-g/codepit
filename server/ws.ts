@@ -4,8 +4,17 @@ import type { Duplex } from 'node:stream';
 import { sessionManager } from './acp/session-mgr.js';
 import { ptyManager } from './pty-manager.js';
 import { store } from './store.js';
-import { getOrCreateToken } from './paths.js';
-import { checkAccess, headerToken } from './security.js';
+import { checkAccess } from './security.js';
+import { devices } from './devices.js';
+
+/** Who is on the other end of a socket: the host machine, or a paired device. */
+interface Peer {
+  local: boolean;
+  deviceId?: string;
+}
+
+/** Close code a revoked device's sockets end with; the page then shows the pair screen. */
+export const WS_CLOSE_REVOKED = 4401;
 
 /**
  * Sets up the WebSocket endpoints and returns `attach`, which adds them to an HTTP
@@ -27,15 +36,17 @@ export function setupWebSockets(): (server: Server) => void {
     const pathname = url.pathname;
 
     if (pathname === '/ws' || pathname.startsWith('/ws/terminal/')) {
-      const reqToken = url.searchParams.get('token') || headerToken(request.headers);
-      const decision = checkAccess(request, reqToken || undefined, getOrCreateToken());
+      const decision = checkAccess(request);
       if (!decision.ok) {
         socket.write(`HTTP/1.1 ${decision.status} ${decision.status === 403 ? 'Forbidden' : 'Unauthorized'}\r\n\r\n`);
         socket.destroy();
         return;
       }
 
+      const peer: Peer = { local: decision.local, deviceId: decision.deviceId };
       wss.handleUpgrade(request, socket, head, (ws) => {
+        peers.set(ws, peer);
+        ws.on('close', () => peers.delete(ws));
         wss.emit('connection', ws, request, url);
       });
     } else {
@@ -44,6 +55,24 @@ export function setupWebSockets(): (server: Server) => void {
   };
 
   const sessionClients = new Set<WebSocket>();
+  // Every open socket, terminals included, so a revoked device can be cut off at once
+  const peers = new Map<WebSocket, Peer>();
+
+  devices.on('revoked', (deviceId: string) => {
+    for (const [ws, peer] of peers) {
+      if (peer.deviceId === deviceId) ws.close(WS_CLOSE_REVOKED, 'Device access revoked');
+    }
+  });
+
+  // Only the host can let a device in, so only the host hears that one is asking
+  const toLocal = (msg: object) => {
+    const text = JSON.stringify(msg);
+    for (const ws of sessionClients) {
+      if (peers.get(ws)?.local && ws.readyState === WebSocket.OPEN) ws.send(text);
+    }
+  };
+  devices.on('pairingRequest', (request) => toLocal({ type: 'pairingRequest', request }));
+  devices.on('changed', () => toLocal({ type: 'devicesChanged' }));
 
   // Relay session events to all active connected web clients
   sessionManager.on('sessionsUpdated', (sessions) => {

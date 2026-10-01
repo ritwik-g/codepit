@@ -73,7 +73,7 @@ async function runTests() {
 
   // 3. The SVG path is the encoder's matrix, shifted by the quiet zone and nothing else
   console.log('3️⃣ Drawing the QR code...');
-  const link = 'http://192.168.68.104:7812?token=0123456789abcdef0123456789abcdef0123456789abcdef';
+  const link = 'http://192.168.68.104:7812/?pair=Zm9vYmFyYmF6cXV4MDEyMzQ1';
   const { modules } = QRCode.create(link, { errorCorrectionLevel: 'M' });
   const shape = qrShape(modules);
   expect(shape.size === modules.size + QR_MARGIN * 2, 'Size must include the quiet zone on both sides');

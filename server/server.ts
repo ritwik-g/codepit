@@ -6,9 +6,11 @@ import type { AddressInfo, Socket } from 'node:net';
 import { apiRouter } from './api.js';
 import { setupWebSockets } from './ws.js';
 import { sessionManager } from './acp/session-mgr.js';
-import { getOrCreateToken, initStorage } from './paths.js';
+import { initStorage, removeLegacyToken } from './paths.js';
 import { loadStoredCredentials } from './subscriptions.js';
-import { checkAccess, headerToken } from './security.js';
+import { checkAccess, checkOrigin, setAppKey } from './security.js';
+import { deviceCookie } from './devices.js';
+import { isPairingRequestPath, pairingRouter } from './pairing-routes.js';
 import { webManifest } from './manifest.js';
 import { resolveStartupNetwork } from './network.js';
 import { lanAccess, readStoredLanEnabled, type LanStatus } from './lan.js';
@@ -18,15 +20,18 @@ export interface StartServerOptions {
   staticDir?: string;
   /** Defaults to PORT, then 7890. 0 picks a free port. */
   port?: number;
+  /**
+   * The desktop app's key for this launch. Loopback clients that send it (as the
+   * codepit_app cookie) are the host; other local clients are refused unless
+   * CODEPIT_LOCALHOST allows them.
+   */
+  appKey?: string;
 }
 
 export interface ServerHandle {
-  /** Loopback address of the server, without the token. */
+  /** Loopback address of the server. */
   url: string;
-  /** `url` with the access token, for opening the UI in a browser or window. */
-  clientUrl: string;
   port: number;
-  token: string;
   /** LAN state right after startup, including interfaces that failed to bind. */
   lan: LanStatus;
   /** Sessions whose agent process is running (or starting) right now. */
@@ -47,6 +52,8 @@ function urlHost(host: string): string {
  */
 export async function startServer(opts: StartServerOptions = {}): Promise<ServerHandle> {
   initStorage();
+  removeLegacyToken();
+  setAppKey(opts.appKey);
   loadStoredCredentials();
 
   const app = express();
@@ -55,30 +62,28 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   // cross-site HTML form reach the API as a "simple" request without a CORS preflight.
   app.use(express.json({ limit: '50mb' }));
 
-  const token = getOrCreateToken();
-
   app.use((req, res, next) => {
-    // Allow static assets and favicon without token
+    // Static assets, the page and the manifest are public; the API is not
     if (!req.path.startsWith('/api')) {
       return next();
     }
-    const reqToken = headerToken(req.headers) ?? (typeof req.query.token === 'string' ? req.query.token : undefined);
-    const decision = checkAccess(req, reqToken, token);
-    if (decision.ok) {
-      return next();
+    // An unpaired device must be able to ask to pair and hear back
+    const decision = isPairingRequestPath(req.path) ? checkOrigin(req) : checkAccess(req);
+    if (!decision.ok) {
+      res.status(decision.status).json({ error: decision.error, reason: decision.reason });
+      return;
     }
-    res.status(decision.status).json({ error: decision.error });
+    res.locals.access = decision;
+    // Sent again now and then so the browser never expires a device that is in use
+    if (decision.refreshCookie) res.append('Set-Cookie', deviceCookie(decision.refreshCookie));
+    next();
   });
 
+  app.use('/api', pairingRouter);
   app.use('/api', apiRouter);
 
-  // Asked for with the page's own token, which goes back in the start link only when it is valid
-  app.get('/manifest.webmanifest', (req, res) => {
-    const asked = typeof req.query.token === 'string' ? req.query.token : undefined;
-    res
-      .type('application/manifest+json')
-      .set('Cache-Control', 'no-store')
-      .send(JSON.stringify(webManifest(asked && asked === token ? asked : undefined)));
+  app.get('/manifest.webmanifest', (_req, res) => {
+    res.type('application/manifest+json').set('Cache-Control', 'no-store').send(JSON.stringify(webManifest()));
   });
 
   const staticDir = opts.staticDir;
@@ -125,9 +130,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
 
   return {
     url,
-    clientUrl: `${url}/?token=${token}`,
     port,
-    token,
     lan,
     runningAgentCount: () => sessionManager.listSessions().filter((s) => s.isAgentRunning).length,
     close: () =>

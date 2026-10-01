@@ -1,15 +1,24 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, shell, Menu, type MenuItemConstructorOptions } from 'electron';
 
 import { startServer, type ServerHandle } from '../server/server.js';
+import { APP_COOKIE } from '../server/security.js';
 import { useBundledAgentRuntime } from '../server/agents/registry.js';
 import { adoptLoginShellPath } from './shell-path.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const isDev = !app.isPackaged;
+
+/**
+ * Minted at each launch and never written down: the server lets in only the
+ * window holding it, so other users and programs on this Mac can't open CodePit
+ * at 127.0.0.1 in a browser.
+ */
+const APP_KEY = crypto.randomBytes(32).toString('base64url');
 
 /**
  * The bundled main process lives at <root>/dist-electron/main.mjs and the
@@ -66,7 +75,7 @@ function ensureServer(): Promise<ServerHandle> {
       modulesDir: path.join(UNPACKED_ROOT, 'node_modules'),
       scriptsDir: AGENT_SCRIPTS_DIR,
     });
-    handle = await startServer({ staticDir: STATIC_DIR });
+    handle = await startServer({ staticDir: STATIC_DIR, appKey: APP_KEY });
     return handle;
   })();
   return starting;
@@ -164,8 +173,16 @@ async function createWindow(): Promise<void> {
     if (external(url)) e.preventDefault();
   });
 
-  // clientUrl carries the access token; the page keeps it in localStorage.
-  await win.loadURL(server.clientUrl);
+  // The app key goes in as a session cookie (gone at quit), so it rides on every
+  // request the page makes, images and WebSockets included.
+  await win.webContents.session.cookies.set({
+    url: server.url,
+    name: APP_COOKIE,
+    value: APP_KEY,
+    httpOnly: true,
+    sameSite: 'strict',
+  });
+  await win.loadURL(server.url);
 }
 
 function buildMenu(): void {

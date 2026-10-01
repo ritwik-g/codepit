@@ -1,6 +1,6 @@
 /**
  * The rename to CodePit: the one-time move of the data folder from ~/.acp-terminal
- * to ~/.codepit, and the old names (ACP_* variables, x-acp-token) still being accepted.
+ * to ~/.codepit, and the old ACP_* variable names still being accepted.
  * Runs on temp folders only.
  */
 import assert from 'node:assert/strict';
@@ -9,7 +9,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { appEnv } from '../server/env.js';
 import { migrateLegacyAppDir } from '../server/paths.js';
-import { headerToken } from '../server/security.js';
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -101,14 +100,6 @@ try {
     assert.equal(appEnv('APP_DIR', { CODEPIT_APP_DIR: '/new', ACP_APP_DIR: '/old' }), '/new');
     assert.equal(appEnv('APP_DIR', { ACP_APP_DIR: '/old' }), '/old');
     assert.equal(appEnv('APP_DIR', {}), undefined);
-  });
-
-  test('the token header is read under its new name and its old one', () => {
-    assert.equal(headerToken({ 'x-codepit-token': 'n' }), 'n');
-    assert.equal(headerToken({ 'x-acp-token': 'o' }), 'o');
-    assert.equal(headerToken({ 'x-codepit-token': 'n', 'x-acp-token': 'o' }), 'n');
-    assert.equal(headerToken({ 'x-codepit-token': ['a', 'b'] as any }), undefined);
-    assert.equal(headerToken({}), undefined);
   });
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

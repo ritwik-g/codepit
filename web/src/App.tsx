@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { AcpSession, AgentDescriptor, AgentTask, AgentTaskTextDelta, McpServer, SessionSummary } from './types';
-import { api, connectWebSocket, saveToken } from './api';
+import { api, connectWebSocket, isUnauthorized, type PairingRequestInfo } from './api';
 import { Sidebar } from './components/Sidebar';
 import { SessionDetail, nextPriority } from './components/SessionDetail';
 import { NewSessionModal } from './components/NewSessionModal';
@@ -10,11 +10,12 @@ import { HomeDashboard } from './components/HomeDashboard';
 import { BrandMark } from './components/BrandMark';
 import { SubscriptionsUsageModal } from './components/SubscriptionsUsageModal';
 import { NetworkModal } from './components/NetworkModal';
+import { PairScreen } from './components/PairScreen';
 import { McpModal } from './components/mcp/McpModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { MOD_KEY, needsAttention } from './components/Sidebar';
 import { useTheme } from './design/theme';
-import { Button, Field, Icon, Input, Spinner } from './ui';
+import { Button, Icon, IconButton, Spinner } from './ui';
 
 /** Session ids in the order the sidebar shows them, honouring its filters and grouping. */
 function visibleSessionOrder(): string[] {
@@ -71,7 +72,10 @@ export const App: React.FC = () => {
   // Saved MCP servers, for the sidebar's count of the ones switched on
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [authError, setAuthError] = useState(false);
-  const [tokenInput, setTokenInput] = useState('');
+  // A device asking the host to let it in; only the host's own page hears of these
+  const [pairingToast, setPairingToast] = useState<PairingRequestInfo | null>(null);
+  // Bumped when devices or pairing requests change, so an open LAN dialog reloads them
+  const [devicesVersion, setDevicesVersion] = useState(0);
   // Start on the list: with nothing selected yet, the session pane on mobile is a dead end.
   const [mobileView, setMobileView] = useState<'list' | 'session'>('list');
   const [loading, setLoading] = useState(true);
@@ -101,7 +105,7 @@ export const App: React.FC = () => {
       }
     } catch (err: any) {
       console.error('[App] Failed to fetch sessions:', err);
-      if (err.message?.includes('401') || err.message?.includes('Unauthorized')) {
+      if (isUnauthorized(err)) {
         setAuthError(true);
       } else {
         setOffline(true);
@@ -115,24 +119,17 @@ export const App: React.FC = () => {
       setActiveSession(res.session);
     } catch (err: any) {
       console.error(`[App] Failed to fetch session detail for ${id}:`, err);
-      if (err.message?.includes('401') || err.message?.includes('Unauthorized')) {
+      if (isUnauthorized(err)) {
         setAuthError(true);
       }
     }
   }, []);
 
-  const handleManualTokenSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tokenInput.trim()) return;
-    saveToken(tokenInput.trim());
-    window.location.search = `?token=${encodeURIComponent(tokenInput.trim())}`;
-  };
-
   // Initial load
   useEffect(() => {
     Promise.all([
       api.getAgents().then((res) => setAgents(res.agents)).catch((err) => {
-        if (err.message?.includes('401') || err.message?.includes('Unauthorized')) setAuthError(true);
+        if (isUnauthorized(err)) setAuthError(true);
       }),
       fetchSessions(),
       // The count is a nicety; never hold up the first paint or fail the load over it
@@ -238,6 +235,10 @@ export const App: React.FC = () => {
           fetchSessionDetail(selectedId);
           fetchSessions();
         }
+      } else if (msg.type === 'pairingRequest' && msg.request) {
+        setPairingToast(msg.request as PairingRequestInfo);
+      } else if (msg.type === 'devicesChanged') {
+        setDevicesVersion((v) => v + 1);
       }
     }, () => {
       // Reconnected: resync everything streamed while the socket was down.
@@ -247,7 +248,12 @@ export const App: React.FC = () => {
         fetchSessions();
         if (selectedId) fetchSessionDetail(selectedId);
       }
-    }, () => {
+    }, (code) => {
+      // This device's access was revoked from the host: back to the pair screen at once
+      if (code === 4401) {
+        setAuthError(true);
+        return;
+      }
       wasOffline = true;
       setOffline(true);
     });
@@ -256,6 +262,13 @@ export const App: React.FC = () => {
       ws.close();
     };
   }, [selectedId, fetchSessionDetail, fetchSessions]);
+
+  // A pairing request lasts five minutes; so does its toast
+  useEffect(() => {
+    if (!pairingToast) return;
+    const timer = setTimeout(() => setPairingToast(null), Math.max(0, pairingToast.expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [pairingToast]);
 
   const anyModalOpen =
     showNewModal || showSwitchModal || showPalette || showSubscriptionsModal || showNetworkModal || showMcpModal;
@@ -457,7 +470,7 @@ export const App: React.FC = () => {
         label: 'Open LAN access',
         icon: 'wifi',
         group: 'Actions',
-        keywords: 'network phone device token share url',
+        keywords: 'network phone device pair pairing qr code revoke share url',
         run: () => setShowNetworkModal(true),
       },
       {
@@ -491,41 +504,9 @@ export const App: React.FC = () => {
     return list;
   }, [activeSession, selectedId, agents, resolvedTheme, themePreference, annotate, openNewSession, goHome, setThemePreference]);
 
-  if (authError && sessions.length === 0) {
-    return (
-      <div className="auth-screen">
-        <form className="auth-card" onSubmit={handleManualTokenSubmit}>
-          <span className="auth-icon" aria-hidden>
-            <Icon name="lock" size={20} />
-          </span>
-          <h1 className="auth-title">Connect to CodePit</h1>
-          <p className="auth-desc">
-            You're opening the workspace from another device (<code>{window.location.host}</code>). Paste the access token
-            from the host computer to continue.
-          </p>
-          <Field
-            label="Access token"
-            htmlFor="auth-token"
-            hint="On the host, open LAN access in the sidebar to copy the token, or a link that signs you in."
-          >
-            <Input
-              id="auth-token"
-              type="text"
-              mono
-              placeholder="Paste the token"
-              value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-              autoFocus
-            />
-          </Field>
-          <Button type="submit" variant="primary" size="lg" block disabled={!tokenInput.trim()}>
-            Connect
-          </Button>
-        </form>
-      </div>
-    );
+  // Not paired, or revoked while open: a 401 is final, whatever is already on screen
+  if (authError) {
+    return <PairScreen />;
   }
 
   if (loading && sessions.length === 0) {
@@ -602,6 +583,26 @@ export const App: React.FC = () => {
         </div>
       )}
 
+      {pairingToast && !showNetworkModal && (
+        <div className="conn-toast pair-toast" role="status">
+          <Icon name="monitor" size={14} />
+          <span className="conn-toast-text">
+            <strong>{pairingToast.name}</strong> wants access
+          </span>
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={() => {
+              setPairingToast(null);
+              setShowNetworkModal(true);
+            }}
+          >
+            Review
+          </Button>
+          <IconButton icon="x" label="Dismiss" size="sm" onClick={() => setPairingToast(null)} />
+        </div>
+      )}
+
       {showNewModal && (
         <NewSessionModal
           agents={newSessionAgents}
@@ -655,7 +656,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {showNetworkModal && <NetworkModal onClose={() => setShowNetworkModal(false)} />}
+      {showNetworkModal && <NetworkModal devicesVersion={devicesVersion} onClose={() => setShowNetworkModal(false)} />}
 
       {showMcpModal && (
         <McpModal

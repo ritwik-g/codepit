@@ -2,17 +2,16 @@
  * The web app manifest, so CodePit can be added to a phone's home screen and open
  * full screen like an app.
  *
- * A home-screen app keeps its own storage, apart from the browser's, so it cannot see
- * the access token the browser saved. Its start link carries the token instead: the
- * page asks for the manifest with its own token, and only a valid one is put back.
+ * A home-screen app keeps its own cookies, apart from the browser's, so on first
+ * launch it pairs as a device of its own.
  */
-export function webManifest(startToken?: string) {
+export function webManifest() {
   return {
     id: '/',
     name: 'CodePit',
     short_name: 'CodePit',
     description: 'Your coding agents, in one place',
-    start_url: startToken ? `/?token=${encodeURIComponent(startToken)}` : '/',
+    start_url: '/',
     scope: '/',
     display: 'standalone',
     // The dark theme's --bg and the page's theme-color

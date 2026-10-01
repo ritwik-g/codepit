@@ -32,7 +32,7 @@ export function qrShape(modules: { size: number; data: ArrayLike<number | boolea
 }
 
 /**
- * Builds the QR code for a sign-in link in the browser, so the token-bearing
+ * Builds the QR code for a pairing link in the browser, so the
  * image never goes through the server or a log. The encoder (~25 kB) loads on
  * first use rather than with the app.
  */

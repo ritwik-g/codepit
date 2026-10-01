@@ -22,8 +22,9 @@ import {
 } from './subscriptions.js';
 import { lanAccess } from './lan.js';
 import { describeLanAddresses } from './network.js';
-import { getOrCreateToken, getUploadsDir } from './paths.js';
-import { isLocalClient } from './security.js';
+import { getUploadsDir } from './paths.js';
+import { devices } from './devices.js';
+import { isHostClient } from './security.js';
 import { mcpRouter } from './mcp/routes.js';
 import { advertisedOptions, effortChoicesFor, effortError, isEffortValue, isFavoriteList, markNewModels, readFavoriteModels, writeFavoriteModels } from './acp/agent-options.js';
 import { refreshCodexRateLimitsAsync } from './codex-limits.js';
@@ -659,23 +660,17 @@ apiRouter.get('/sessions/:id/usage', (req: Request, res: Response) => {
 
 // 19. Local Network (LAN) Access Info
 async function networkInfo(req: Request) {
-  const local = isLocalClient(req);
+  const local = isHostClient(req);
   // Re-reading interfaces rebinds LAN listeners, so only the host machine triggers it
   const lan = local ? await lanAccess.refresh() : lanAccess.status();
-  const token = getOrCreateToken();
   return {
     port: lan.port,
     host: lan.host,
     lanEnabled: lan.enabled,
-    token,
     ips: lan.addresses,
     localUrl: `http://127.0.0.1:${lan.port}`,
-    networkUrls: lan.addresses.map((ip) => `http://${ip}:${lan.port}?token=${token}`),
     // Same addresses, labelled (Wi-Fi, VM bridge...) and best first, for the QR code picker
-    lanInterfaces: (await describeLanAddresses(lan.addresses)).map((iface) => ({
-      ...iface,
-      url: `http://${iface.address}:${lan.port}?token=${token}`,
-    })),
+    lanInterfaces: await describeLanAddresses(lan.addresses),
     lanErrors: lan.errors,
     // Only the machine running the server may change who else can reach it
     canToggle: local && !lan.lockedReason,
@@ -688,7 +683,7 @@ apiRouter.get('/network', async (req: Request, res: Response) => {
 });
 
 apiRouter.post('/network/lan', async (req: Request, res: Response) => {
-  if (!isLocalClient(req)) {
+  if (!isHostClient(req)) {
     res.status(403).json({ error: 'LAN access can only be changed on the computer running CodePit' });
     return;
   }
@@ -703,6 +698,8 @@ apiRouter.post('/network/lan', async (req: Request, res: Response) => {
   }
   try {
     await lanAccess.setEnabled(enabled);
+    // Devices waiting to pair had no answer; with LAN off they could not use one anyway
+    if (!enabled) devices.cancelPairing();
     res.json(await networkInfo(req));
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to change LAN access' });

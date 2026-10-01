@@ -20,51 +20,25 @@ import type {
   VendorSubscriptionInfo,
 } from './types';
 
-const TOKEN_KEY = 'codepit_token';
-// The key's name before the rename, still read so an open tab stays signed in
-const LEGACY_TOKEN_KEY = 'acp_token';
-
-/**
- * Kept in localStorage, not sessionStorage: phones drop a background tab's session
- * storage, and a home-screen launch or a bookmark without ?token= would then ask again.
- */
-function readStoredToken(): string {
-  try {
-    return (
-      localStorage.getItem(TOKEN_KEY) ||
-      sessionStorage.getItem(TOKEN_KEY) ||
-      sessionStorage.getItem(LEGACY_TOKEN_KEY) ||
-      ''
-    );
-  } catch {
-    return '';
+/** Thrown for a non-2xx reply, with the status so callers need not parse the message. */
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    /** 'use-app': a browser on the host machine, where only the CodePit app gets in. */
+    readonly reason?: string
+  ) {
+    super(message);
   }
 }
 
-export function saveToken(token: string): void {
-  try {
-    localStorage.setItem(TOKEN_KEY, token);
-  } catch {
-    // Storage blocked (private mode): the ?token= in the URL still signs requests in
-  }
-}
+/** True for a 401: this browser is not (or no longer) a paired device. */
+export const isUnauthorized = (err: unknown) => err instanceof HttpError && err.status === 401;
 
-export function getToken(): string {
-  const t = new URLSearchParams(window.location.search).get('token');
-  if (t) {
-    if (readStoredToken() !== t) saveToken(t);
-    return t;
-  }
-  return readStoredToken();
-}
-
+// A paired device signs in with its HttpOnly cookie, which the browser sends by itself
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
   const headers = new Headers(options.headers || {});
   headers.set('Content-Type', 'application/json');
-  if (token) {
-    headers.set('x-codepit-token', token);
-  }
 
   const res = await fetch(url, {
     ...options,
@@ -73,7 +47,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error || `HTTP ${res.status}: ${res.statusText}`);
+    throw new HttpError(errorData.error || `HTTP ${res.status}: ${res.statusText}`, res.status, errorData.reason);
   }
 
   return res.json();
@@ -284,7 +258,78 @@ export const api = {
   getNetworkInfo: () => request<NetworkInfo>('/api/network'),
   setLanAccess: (enabled: boolean) =>
     request<NetworkInfo>('/api/network/lan', { method: 'POST', body: JSON.stringify({ enabled }) }),
+
+  // Pairing: the first three are for the device asking to be let in
+  requestPairing: (data: { ticket?: string; standalone?: boolean }) =>
+    request<PairingStart>('/api/pair/request', { method: 'POST', body: JSON.stringify(data) }),
+  pollPairing: (id: string, secret: string) =>
+    request<{ status: PairingStatus; device?: { id: string; name: string } }>(
+      `/api/pair/request/${encodeURIComponent(id)}?secret=${encodeURIComponent(secret)}`
+    ),
+  renamePairingRequest: (id: string, secret: string, name: string) =>
+    request<{ name: string }>(`/api/pair/request/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ secret, name }),
+    }),
+  // The host's side
+  createPairingTicket: () => request<PairingTicket>('/api/pair/ticket', { method: 'POST' }),
+  getDevices: () => request<{ devices: PairedDevice[]; pending: PairingRequestInfo[] }>('/api/devices'),
+  approvePairing: (by: { code: string } | { requestId: string }) =>
+    request<{ device: PairedDevice }>('/api/pair/approve', { method: 'POST', body: JSON.stringify(by) }),
+  denyPairing: (requestId: string) =>
+    request<{ ok: boolean }>('/api/pair/deny', { method: 'POST', body: JSON.stringify({ requestId }) }),
+  revokeDevice: (id: string) => request<{ ok: boolean }>(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  renameDevice: (id: string, name: string) =>
+    request<{ device: PairedDevice }>(`/api/devices/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  // A paired device about itself
+  getSelfDevice: () => request<{ local: boolean; device?: PairedDevice | null }>('/api/devices/self'),
+  forgetSelfDevice: () => request<{ ok: boolean }>('/api/devices/self', { method: 'DELETE' }),
 };
+
+export type PairingStatus = 'pending' | 'approved' | 'denied' | 'expired';
+
+export interface PairingStart {
+  requestId: string;
+  /** Six digits the person types on the host. */
+  code: string;
+  pollSecret: string;
+  name: string;
+  /** Opened from the host's QR code, so the host can allow it with one click. */
+  viaTicket: boolean;
+  /** A ticket was given but was used or had expired; the code still works. */
+  ticketRejected: boolean;
+  expiresAt: number;
+}
+
+export interface PairingTicket {
+  ticket: string;
+  expiresAt: number;
+  /** One pairing link per network, best first. */
+  lanInterfaces: Array<LanInterface & { url: string }>;
+}
+
+export interface PairedDevice {
+  id: string;
+  name: string;
+  userAgent: string;
+  createdAt: number;
+  lastSeenAt: number;
+  lastIp: string;
+  /** When the device loses access if it is not used before then. */
+  expiresAt: number;
+}
+
+export interface PairingRequestInfo {
+  id: string;
+  name: string;
+  ip: string;
+  viaTicket: boolean;
+  createdAt: number;
+  expiresAt: number;
+}
 
 export interface LanInterface {
   address: string;
@@ -293,19 +338,15 @@ export interface LanInterface {
   kind: 'wifi' | 'ethernet' | 'other' | 'vpn' | 'virtual';
   /** Plain-words network name, e.g. "Wi-Fi". */
   label: string;
-  /** Sign-in link for this address, token included. */
-  url: string;
 }
 
 export interface NetworkInfo {
   port: number;
-  token: string;
   /** Addresses LAN devices can reach the server on right now. */
   ips: string[];
   localUrl: string;
-  networkUrls: string[];
-  /** The same links, labelled by network and ordered best first (Wi-Fi before VM bridges). */
-  lanInterfaces?: LanInterface[];
+  /** The same addresses, labelled by network and ordered best first (Wi-Fi before VM bridges). */
+  lanInterfaces: LanInterface[];
   lanEnabled: boolean;
   host: string;
   /** Interfaces that could not be listened on, with the reason. */
@@ -313,17 +354,6 @@ export interface NetworkInfo {
   /** False when viewed from another device, or when HOST fixes the setting. */
   canToggle: boolean;
   lockedReason?: string;
-}
-
-/**
- * Appends the access token to a same-origin URL. Needed where a request can't
- * carry the x-codepit-token header: <img src>, links and WebSocket URLs. Without it,
- * LAN clients get 401 on attachments and the live terminal.
- */
-export function withToken(url: string): string {
-  const token = getToken();
-  if (!token || !url.startsWith('/')) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 
 /**
@@ -336,7 +366,7 @@ export function isHostMachine(): boolean {
 
 export function wsUrl(path: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}${withToken(path)}`;
+  return `${protocol}//${window.location.host}${path}`;
 }
 
 export interface LiveSocket {
@@ -351,7 +381,8 @@ export interface LiveSocket {
 export function connectWebSocket(
   onMessage: (msg: any) => void,
   onOpen?: () => void,
-  onClose?: () => void
+  /** Gets the close code: 4401 means this device's access was just revoked. */
+  onClose?: (code: number) => void
 ): LiveSocket {
   let ws: WebSocket | null = null;
   let closedByCaller = false;
@@ -364,9 +395,9 @@ export function connectWebSocket(
       attempt = 0;
       onOpen?.();
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (closedByCaller) return;
-      onClose?.();
+      onClose?.(event.code);
       const delay = Math.min(10_000, 500 * 2 ** attempt);
       attempt += 1;
       retryTimer = setTimeout(open, delay);

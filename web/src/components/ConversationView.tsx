@@ -1,6 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AcpSession, FileAttachment, TurnMessage } from '../types';
-import { withToken } from '../api';
 import { Badge, Button, EmptyState, Icon, IconButton, Spinner } from '../ui';
 import { AgentTurnBody } from './AgentTurn';
 import { CompactionCard } from './CompactionCard';
@@ -69,7 +68,7 @@ const TurnAttachments: React.FC<{ attachments: FileAttachment[]; onPreviewImage:
 }) => (
   <div className="ws-user-attachments">
     {attachments.map((att) => {
-      const src = att.url ? withToken(att.url) : att.data;
+      const src = att.url || att.data;
       return att.isImage ? (
         <button
           key={att.id}
@@ -81,7 +80,7 @@ const TurnAttachments: React.FC<{ attachments: FileAttachment[]; onPreviewImage:
           <img src={src} alt={att.name} />
         </button>
       ) : (
-        <a key={att.id} href={att.url ? withToken(att.url) : '#'} download={att.name} className="ws-user-file" title={`Download ${att.name}`}>
+        <a key={att.id} href={att.url || '#'} download={att.name} className="ws-user-file" title={`Download ${att.name}`}>
           <span className="ws-file-icon">
             <Icon name="file" size={15} />
           </span>

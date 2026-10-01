@@ -792,24 +792,23 @@ async function runTests() {
     console.log('   ✅ Failed agent start removes the session');
 
     // 10f. Auth: x-test-remote-ip only honoured in test mode; foreign Origin and rebinding Host rejected
-    const token = 'test-token';
     const spoofed = fakeRequest({ remote: '192.168.1.50', headers: { host: '127.0.0.1:7890', 'x-test-remote-ip': '127.0.0.1' } });
     process.env.NODE_ENV = 'production';
     try {
       if (getRemoteAddress(spoofed) !== '192.168.1.50') throw new Error('x-test-remote-ip honoured outside test mode');
-      if (checkAccess(spoofed, undefined, token).ok) throw new Error('Spoofed loopback header bypassed token auth');
+      if (checkAccess(spoofed).ok) throw new Error('Spoofed loopback header bypassed device pairing');
     } finally {
       process.env.NODE_ENV = 'test';
     }
     const local = { remote: '127.0.0.1' };
-    const crossOrigin = checkAccess(fakeRequest({ ...local, headers: { host: '127.0.0.1:7890', origin: 'http://evil.example' } }), token, token);
-    if (crossOrigin.ok || crossOrigin.status !== 403) throw new Error('Cross-origin request must be 403 even with a token');
-    const rebinding = checkAccess(fakeRequest({ ...local, headers: { host: 'evil.example:7890', origin: 'http://evil.example:7890' } }), undefined, token);
+    const crossOrigin = checkAccess(fakeRequest({ ...local, headers: { host: '127.0.0.1:7890', origin: 'http://evil.example' } }));
+    if (crossOrigin.ok || crossOrigin.status !== 403) throw new Error('Cross-origin request must be 403 even from loopback');
+    const rebinding = checkAccess(fakeRequest({ ...local, headers: { host: 'evil.example:7890', origin: 'http://evil.example:7890' } }));
     if (rebinding.ok) throw new Error('DNS-rebinding Host must not get loopback trust');
-    const viteDev = checkAccess(fakeRequest({ ...local, headers: { host: '127.0.0.1:7890', origin: 'http://localhost:5280' } }), undefined, token);
+    const viteDev = checkAccess(fakeRequest({ ...local, headers: { host: '127.0.0.1:7890', origin: 'http://localhost:5280' } }));
     if (!viteDev.ok) throw new Error('Loopback origin (Vite dev server) must be allowed');
-    const lanWithToken = checkAccess(fakeRequest({ remote: '192.168.1.50', headers: { host: '192.168.1.5:7890', origin: 'http://192.168.1.5:7890' } }), token, token);
-    if (!lanWithToken.ok) throw new Error('Same-origin LAN request with token must be allowed');
+    const lanUnpaired = checkAccess(fakeRequest({ remote: '192.168.1.50', headers: { host: '192.168.1.5:7890', origin: 'http://192.168.1.5:7890' } }));
+    if (lanUnpaired.ok || lanUnpaired.status !== 401) throw new Error('Same-origin LAN request without a paired cookie must be 401');
     console.log('   ✅ Spoofed loopback header, cross-origin and rebinding requests rejected\n');
 
     console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! 🚀');

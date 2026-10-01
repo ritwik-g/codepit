@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { appEnv } from './env.js';
 
 export const HOME = os.homedir();
@@ -96,10 +95,6 @@ export function getStateFile(): string {
   return path.join(getAppDir(), 'state.json');
 }
 
-export function getTokenFile(): string {
-  return path.join(getAppDir(), 'token');
-}
-
 export function getUploadsDir(): string {
   return path.join(getAppDir(), 'uploads');
 }
@@ -119,7 +114,6 @@ export const paths = {
   get SESSIONS_DIR(): string { return getSessionsDir(); },
   get LOG_DIR(): string { return getLogDir(); },
   get STATE_FILE(): string { return getStateFile(); },
-  get TOKEN_FILE(): string { return getTokenFile(); },
   get CREDENTIALS_FILE(): string { return getCredentialsFile(); },
   get UPLOADS_DIR(): string { return getUploadsDir(); },
   get SETTINGS_FILE(): string { return getSettingsFile(); },
@@ -143,30 +137,14 @@ export function initStorage(): void {
   ensurePrivateDir(getLogDir());
 }
 
-let cachedTokenDir: string | null = null;
-let activeToken: string | null = null;
-
-export function getOrCreateToken(): string {
-  const currentAppDir = getAppDir();
-  if (activeToken && cachedTokenDir === currentAppDir) return activeToken;
-
-  const tokenFile = getTokenFile();
+/**
+ * The shared LAN access token from before per-device pairing. It no longer signs
+ * anything in, so it is deleted rather than left lying around.
+ */
+export function removeLegacyToken(): void {
   try {
-    if (fs.existsSync(tokenFile)) {
-      const existing = fs.readFileSync(tokenFile, 'utf8').trim();
-      if (existing) {
-        activeToken = existing;
-        cachedTokenDir = currentAppDir;
-        return activeToken;
-      }
-    }
+    fs.rmSync(path.join(getAppDir(), 'token'), { force: true });
   } catch {
-    // regenerate if unreadable
+    // best effort
   }
-
-  ensurePrivateDir(currentAppDir);
-  activeToken = crypto.randomBytes(24).toString('hex');
-  fs.writeFileSync(tokenFile, activeToken, { mode: FILE_MODE, encoding: 'utf8' });
-  cachedTokenDir = currentAppDir;
-  return activeToken;
 }

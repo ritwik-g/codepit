@@ -2,7 +2,6 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App';
 import { applyTheme, readThemePreference } from './design/theme';
-import { getToken } from './api';
 import '@xterm/xterm/css/xterm.css';
 import './design/tokens.css';
 import './design/base.css';
@@ -18,12 +17,10 @@ applyTheme(readThemePreference());
 if (/\bElectron\//.test(navigator.userAgent) && /Mac/.test(navigator.platform)) {
   document.documentElement.dataset.shell = 'desktop-mac';
 } else {
-  // Installable on phones. The manifest's start link carries this page's access token,
-  // since an app added to the home screen does not share the browser's storage
+  // Installable on phones. A home-screen app keeps its own cookies, so it pairs as a device of its own
   const manifest = document.createElement('link');
   manifest.rel = 'manifest';
-  const token = getToken();
-  manifest.href = token ? `/manifest.webmanifest?token=${encodeURIComponent(token)}` : '/manifest.webmanifest';
+  manifest.href = '/manifest.webmanifest';
   document.head.appendChild(manifest);
 }
 

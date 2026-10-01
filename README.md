@@ -18,8 +18,8 @@ that needs you.
 > works *with* their coding agents. Product names are used only to say which
 > agents it drives.
 
-**Runs on your machine.** The server listens on `127.0.0.1` by default and keeps
-its state in `~/.codepit/`. The agents themselves talk to their vendors exactly
+**Runs on your machine.** The server listens on `127.0.0.1` by default, opens
+only in the CodePit app on that machine, and keeps its state in `~/.codepit/`. The agents themselves talk to their vendors exactly
 as they would in your terminal, using your existing logins.
 
 ---
@@ -107,8 +107,8 @@ as they would in your terminal, using your existing logins.
 
 ### Phone and other devices
 - **LAN access** is off by default and turned on from the app without a
-  restart. Other devices get a link and a QR code that sign them in, and every
-  request from them needs the access token.
+  restart. Each phone or computer is paired once, by scanning a QR code or typing
+  the code it shows, and can be revoked on its own.
 - **Add to Home Screen** on a phone for a standalone app with its own layout.
 
 ### Mac app
@@ -162,8 +162,8 @@ other agents possible. Not everything has come across yet.
 | Keys `j` `k` `/` `p` `c` | ✅ | ✅ plus `⌘K` and `⌘N` |
 | Keys `x` `t` `s` `r` `[` `?` | ✅ | ❌ |
 | `/cleanup` hook marks the session | ✅ | ❌ |
-| Token required even from this machine | ✅ | ❌ loopback clients are trusted; LAN clients need the token |
-| Phone access over the LAN, QR sign-in, home-screen app | ❌ | ✅ |
+| Token required even from this machine | ✅ | ✅ only the CodePit app gets in (a key minted at each launch); browsers on this machine are refused unless `CODEPIT_LOCALHOST=1` |
+| Phone access over the LAN, per-device QR or code pairing, home-screen app | ❌ | ✅ |
 | MCP server setup and catalog | ❌ | ✅ |
 | Model, effort and approval-mode pickers | ❌ | ✅ |
 | Queue, steer, rewind, edit and resend | ❌ | ✅ |
@@ -197,16 +197,23 @@ app until the new one is in place, and opens it. `--no-open` skips the launch;
 
 To only package it: `npm run dist:mac` (dmg and zip in `release/`).
 
-### Server in your browser (macOS or Linux)
+### Server in your browser (for testing)
+
+On the computer running it, CodePit opens only in the CodePit app. A browser
+there gets in only when localhost access is turned on for testing:
 
 ```bash
 npm install
 npm run build
-npm start          # http://127.0.0.1:7890
+CODEPIT_LOCALHOST=1 npm start   # http://127.0.0.1:7890
 ```
 
-For development with hot reload, run `npm run dev` (server) and `npm run dev:web`
-(Vite, http://127.0.0.1:5280).
+Without `CODEPIT_LOCALHOST=1`, `npm start` still serves paired phones and other
+devices over the LAN. They can't be approved without the app, though, so
+pairing new ones needs the flag or the app.
+
+For development with hot reload, run `npm run dev` (server, with localhost access
+on) and `npm run dev:web` (Vite, http://127.0.0.1:5280).
 
 ### Checks
 
@@ -246,11 +253,26 @@ network**. It takes effect immediately and is remembered; turning it off
 disconnects every other device at once. Only the computer running CodePit can
 change it.
 
-The dialog shows a sign-in link for each network interface and a QR code for it.
-Requests from other devices must carry the access token (`?token=` or the
-`x-codepit-token` header), and cross-origin requests are refused. Turn it on only
-on networks you trust. `CODEPIT_LAN=1` or `CODEPIT_LAN=0` overrides the saved
-setting for one run.
+On the computer running it, CodePit opens only in the CodePit app. Every other
+device is paired once, and only from the app:
+
+- **QR code:** scan the code in the dialog with the phone's camera, then click
+  **Allow** when the phone's name appears. Each QR code works once and lasts five
+  minutes; a fresh one replaces it.
+- **Code:** open the address on the device. It shows a six-digit code; type it
+  into the dialog on the host.
+
+A paired device gets its own HttpOnly cookie, and the server keeps only a hash of
+it in `~/.codepit/devices.json`. The dialog lists paired devices with when each
+was last used. You can rename or revoke any of them, and a revoked device is
+disconnected at once. A device unused for 30 days has to pair again. A device can
+also forget itself from its own LAN access dialog. Pairing holds for the address
+it was made on. A phone's home-screen app keeps its own cookies, so it pairs as a
+device of its own.
+
+Cross-origin requests are refused. Turn LAN access on only on networks you
+trust. `CODEPIT_LAN=1` or `CODEPIT_LAN=0` overrides the saved setting for one
+run.
 
 ---
 
@@ -279,7 +301,8 @@ terminal, and with ⌘, Ctrl or Alt held, so ⌘C still copies.
 | `PORT` | `7890` | HTTP and WebSocket port |
 | `HOST` | `127.0.0.1` | Bind address; overrides `CODEPIT_LAN` and locks the LAN switch |
 | `CODEPIT_LAN` | unset | `1` / `0` turns LAN access on or off for this run |
-| `CODEPIT_APP_DIR` | `~/.codepit` | Where sessions, settings, credentials and the token live |
+| `CODEPIT_LOCALHOST` | unset | `1` lets a browser or script on this machine in without the app, for testing (on in `npm run dev` and in tests) |
+| `CODEPIT_APP_DIR` | `~/.codepit` | Where sessions, settings, credentials and paired devices live |
 | `CODEPIT_ENABLE_MOCK` | unset | `1` lists the Built-in Demo Agent |
 | `CLAUDE_ACP_CMD`, `CODEX_ACP_CMD` (+ `_ARGS`) | bundled | Run a different ACP adapter |
 | `AGY_PATH` | `~/.local/bin/agy`, then `PATH` | The Antigravity CLI |
@@ -288,12 +311,13 @@ terminal, and with ⌘, Ctrl or Alt held, so ⌘C still copies.
 
 **What lives in `~/.codepit/`:** `sessions/` (one JSON file per session),
 `uploads/`, `logs/`, `settings.json` (LAN, favourite models, auto-compact
-default), `mcp.json` and `credentials.json` (owner-only), `token`, and the
+default), `mcp.json`, `credentials.json` and `devices.json` (owner-only), and the
 per-agent model option cache.
 
 **Upgrading from ACP Terminal:** the first start moves `~/.acp-terminal` to
-`~/.codepit` and leaves a link at the old path. The old `ACP_*` variables and the
-`x-acp-token` header still work.
+`~/.codepit` and leaves a link at the old path. The old `ACP_*` variables still
+work. The shared access token from earlier versions is deleted on startup;
+devices that used it pair again once.
 
 ---
 
@@ -330,10 +354,13 @@ list until you answer.
 
 - **Rewind doesn't touch your files.** It drops turns from the conversation and
   restarts the agent; edits already on disk stay.
-- **Anything running as you on this machine can use the server.** Loopback
-  requests are trusted without the token, and the agents' file reads and writes
-  aren't limited to the session folder. That is the same trust you give the
-  agents when you run them in a terminal.
+- **On this machine, only the CodePit app gets in.** It mints a key at each
+  launch and keeps it in its own window's cookies, so other users and programs
+  can't open `127.0.0.1:7890` in a browser or call the API. A program running
+  as you can still read your agents' logins and `~/.codepit` directly; no
+  local check stops that. The agents' file reads and writes aren't limited to
+  the session folder either. That is the same trust you give the agents when you
+  run them in a terminal.
 - The folder picker button uses AppleScript, so it is macOS only; typing or
   browsing to a path works everywhere.
 

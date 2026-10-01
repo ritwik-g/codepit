@@ -1740,3 +1740,123 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ======================================================= Device pairing */
+
+.net-device {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 48px;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-inset);
+}
+
+.net-device.is-pending {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.net-device-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.net-device-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.net-device-meta {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.net-device-error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+
+.net-code-ok {
+  color: var(--ok);
+  font-size: var(--text-sm);
+}
+
+.net-code-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.net-code-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.net-code-row .ui-input {
+  width: 9em;
+  letter-spacing: 0.12em;
+}
+
+.net-qr-select {
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.pair-code {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-4) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-inset);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pair-code-gap {
+  width: 0.5em;
+}
+
+.pair-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.auth-foot {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.auth-foot code {
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  font-size: 0.92em;
+}
+
+.pair-toast {
+  border-color: var(--accent-border);
+  padding-right: var(--space-2);
+}

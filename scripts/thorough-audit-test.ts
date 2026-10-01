@@ -310,37 +310,36 @@ async function runThoroughAudit() {
   }
 
   // ==========================================
-  // TEST 10: Local Network (LAN) Security & Token Verification
+  // TEST 10: Local Network (LAN) Security: unpaired devices are refused
   // ==========================================
   try {
-    const netRes = await fetch(`${BASE_URL}/api/network`);
-    const netData = (await netRes.json()) as any;
-    const validToken = netData.token;
-
     // Simulate external non-loopback IP with test header
-    // Without token: should be 401
+    // Not paired: should be 401
     const unauthRes = await fetch(`${BASE_URL}/api/sessions`, {
       headers: {
         'x-test-remote-ip': '192.168.1.50',
       },
     });
 
-    // With valid token: should be 200
-    const authRes = await fetch(`${BASE_URL}/api/sessions`, {
+    // The shared token from before device pairing must not sign anything in
+    const oldTokenRes = await fetch(`${BASE_URL}/api/sessions?token=anything`, {
       headers: {
         'x-test-remote-ip': '192.168.1.50',
-        'x-codepit-token': validToken,
+        'x-codepit-token': 'anything',
       },
     });
 
-    const isSecure = unauthRes.status === 401 && authRes.status === 200;
+    // The host machine is trusted without pairing
+    const localRes = await fetch(`${BASE_URL}/api/sessions`);
+
+    const isSecure = unauthRes.status === 401 && oldTokenRes.status === 401 && localRes.status === 200;
     record(
-      'Test 10: LAN Token Authentication & Security',
+      'Test 10: LAN Device Pairing & Security',
       isSecure,
-      `External without token: ${unauthRes.status}, External with token: ${authRes.status}`
+      `External unpaired: ${unauthRes.status}, External with old token: ${oldTokenRes.status}, Loopback: ${localRes.status}`
     );
   } catch (err: any) {
-    record('Test 10: LAN Token Authentication & Security', false, err.message);
+    record('Test 10: LAN Device Pairing & Security', false, err.message);
   }
 
   // ==========================================
