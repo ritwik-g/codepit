@@ -67,7 +67,7 @@ await test('an agent event with a percentage updates that window, with the reset
   assert.equal(heard, 2);
 });
 
-await test('reads are not repeated within two minutes, however often the numbers are asked for', async () => {
+await test('reads are not repeated within five minutes, however often the numbers are asked for', async () => {
   for (let i = 0; i < 5; i++) {
     getClaudeRateLimits();
     updateClaudeRateLimitsFromSdk({ status: 'allowed', rateLimitType: 'five_hour' });

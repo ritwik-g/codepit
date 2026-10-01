@@ -212,7 +212,7 @@ let isRefreshingClaudeLimits = false;
  * events often carry no percentage, and must not make a stale number look fresh. */
 let lastClaudeProbeAt = 0;
 /** How often the numbers are re-read while something asks for them (about 4s of CPU a probe). */
-const CLAUDE_PROBE_EVERY_MS = 2 * 60_000;
+const CLAUDE_PROBE_EVERY_MS = 5 * 60_000;
 const claudeLimitListeners = new Set<(limits: VendorRateLimits) => void>();
 
 /** Called whenever the account-wide Claude limits change, so open views can be told. */

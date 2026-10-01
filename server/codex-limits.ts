@@ -7,7 +7,7 @@ import type { VendorRateLimits } from './subscriptions.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOCAL_CODEX = path.resolve(__dirname, '../node_modules/.bin/codex');
 const READ_TIMEOUT_MS = 15_000;
-const STALE_MS = 3 * 60_000;
+const STALE_MS = 5 * 60_000;
 
 let cached: VendorRateLimits = { updatedAt: 0 };
 let inflight: Promise<VendorRateLimits> | null = null;
