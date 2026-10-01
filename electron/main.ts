@@ -8,6 +8,7 @@ import { startServer, type ServerHandle } from '../server/server.js';
 import { APP_COOKIE } from '../server/security.js';
 import { useBundledAgentRuntime } from '../server/agents/registry.js';
 import { adoptLoginShellPath } from './shell-path.js';
+import { getAppDir } from '../server/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -68,7 +69,7 @@ if (!app.requestSingleInstanceLock()) {
 /** Starts the server once; reopening the window from the Dock reuses it. */
 function ensureServer(): Promise<ServerHandle> {
   starting ??= (async () => {
-    await adoptLoginShellPath();
+    await adoptLoginShellPath({ savedPathFile: path.join(getAppDir(), 'shell-path.txt') });
     useBundledAgentRuntime({
       execPath: process.execPath,
       launcher: path.join(AGENT_SCRIPTS_DIR, 'agent-launcher.mjs'),
