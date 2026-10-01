@@ -246,6 +246,28 @@ test('a transcript is done only when its last message ends the turn', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a transcript that ends on a hand-back tool is done, with the handed-back report', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tasks-'));
+  const file = path.join(dir, 'abc.output');
+  const line = (o: unknown) => JSON.stringify(o) + '\n';
+  const handback = { type: 'tool_use', id: 'toolu_h', name: 'SubagentHandback', input: { message: 'Found 3 gaps.' } };
+  const base =
+    line({ type: 'user', message: { role: 'user', content: 'go' } }) +
+    line({ type: 'assistant', message: { stop_reason: null, content: [{ type: 'thinking' }] } }) +
+    line({ type: 'assistant', message: { stop_reason: null, content: [handback] } });
+  fs.writeFileSync(file, base);
+  assert.deepEqual(readTranscriptEnd(file), { done: false });
+  // An ordinary tool result does not end the turn
+  fs.writeFileSync(file, base + line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_h' }] } }));
+  assert.deepEqual(readTranscriptEnd(file), { done: false });
+  fs.writeFileSync(file, base + line({ type: 'user', toolEndsTurn: true, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_h' }] } }));
+  assert.deepEqual(readTranscriptEnd(file), { done: true, report: 'Found 3 gaps.' });
+  // A tool that ends the turn without a message still finishes the task
+  fs.writeFileSync(file, line({ type: 'user', toolEndsTurn: true, message: { content: [{ type: 'tool_result', tool_use_id: 'gone' }] } }));
+  assert.deepEqual(readTranscriptEnd(file), { done: true, report: undefined });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('async_task updates carry type, description and usage', () => {
   const u = parseAsyncTaskUpdate({
     sessionUpdate: 'async_task_progress', asyncTaskId: 't1', description: 'Review',

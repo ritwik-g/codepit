@@ -359,7 +359,12 @@ export function readTranscriptEnd(file: string): { done: boolean; report?: strin
     } catch {
       continue; // blank, or the partial first line of the tail
     }
-    if (entry?.type === 'user') return { done: false };
+    if (entry?.type === 'user') {
+      // A subagent that reports back through a tool (SubagentHandback) ends on that tool's
+      // result, flagged toolEndsTurn, rather than on an assistant message
+      if (entry.toolEndsTurn !== true) return { done: false };
+      return { done: true, report: handbackReport(lines.slice(0, i), entry) };
+    }
     if (entry?.type !== 'assistant') continue;
     const msg = entry.message;
     if (msg?.stop_reason !== 'end_turn' && msg?.stop_reason !== 'stop_sequence') return { done: false };
@@ -371,6 +376,26 @@ export function readTranscriptEnd(file: string): { done: boolean; report?: strin
     return { done: true, report: report || undefined };
   }
   return { done: false };
+}
+
+/** The `message` the subagent passed to the tool whose result ended its turn. */
+function handbackReport(before: string[], result: any): string | undefined {
+  const content = Array.isArray(result.message?.content) ? result.message.content : [];
+  const ids = new Set(content.filter((b: any) => b?.type === 'tool_result').map((b: any) => b.tool_use_id));
+  for (let i = before.length - 1; i >= 0; i--) {
+    let entry: any;
+    try {
+      entry = JSON.parse(before[i]);
+    } catch {
+      continue;
+    }
+    if (entry?.type !== 'assistant' || !Array.isArray(entry.message?.content)) continue;
+    const call = entry.message.content.find((b: any) => b?.type === 'tool_use' && ids.has(b.id));
+    if (!call) continue;
+    const text = typeof call.input?.message === 'string' ? call.input.message.trim() : '';
+    return text || undefined;
+  }
+  return undefined;
 }
 
 /**

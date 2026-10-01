@@ -2444,7 +2444,12 @@ function saveAttachments(sessionId: string, attachments?: FileAttachment[]): Fil
   const uploadDir = path.join(getUploadsDir(), sessionId);
   fs.mkdirSync(uploadDir, { recursive: true });
   return attachments.map((att) => {
-    const safeName = (att.name || `file_${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const baseName = (att.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    // Every pasted screenshot is called image.png: a file of its own per upload, so a later
+    // one cannot replace what an earlier message (or a queued one) shows and tells the agent
+    const safeName = att.data
+      ? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${baseName}`
+      : (att.path && path.dirname(att.path) === uploadDir ? path.basename(att.path) : baseName);
     const filePath = path.join(uploadDir, safeName);
     if (att.data) {
       try {

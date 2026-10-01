@@ -114,6 +114,26 @@ async function runTests() {
     }
     console.log('   ✅ Prompt streaming, turn recording, and token usage verified\n');
 
+    // 4b. Two pasted screenshots are both called image.png; the second must not replace the first
+    console.log('4️⃣b Testing that same-named attachments keep their own files...');
+    const png = (text: string) => ({ name: 'image.png', mimeType: 'image/png', isImage: true, size: text.length, data: `data:image/png;base64,${Buffer.from(text).toString('base64')}` });
+    await waitForIdle(session.id);
+    // The note in front of the prompt names the upload's path, which holds "test" here: the mock
+    // asks permission for that, so let it through and turn approvals back on afterwards
+    sessionManager.updateAnnotations(session.id, { autoApprove: true });
+    await sessionManager.sendPrompt(session.id, 'First screenshot', [png('first screenshot')] as any);
+    await waitForIdle(session.id);
+    await sessionManager.sendPrompt(session.id, 'Second screenshot', [png('second screenshot')] as any);
+    await waitForIdle(session.id);
+    const shots = sessionManager.getSession(session.id)!.turns.filter((t) => t.role === 'user' && t.attachments?.length).map((t) => t.attachments![0]);
+    if (shots.length !== 2) throw new Error(`Expected 2 user turns with attachments, got ${shots.length}`);
+    if (shots[0].path === shots[1].path || shots[0].url === shots[1].url) throw new Error(`Both screenshots share one file: ${shots[0].path}`);
+    if (fs.readFileSync(shots[0].path!, 'utf8') !== 'first screenshot') throw new Error('The first screenshot was overwritten by the second');
+    if (fs.readFileSync(shots[1].path!, 'utf8') !== 'second screenshot') throw new Error('The second screenshot was not saved');
+    if (shots[0].name !== 'image.png') throw new Error(`The attachment keeps its own name, got ${shots[0].name}`);
+    sessionManager.updateAnnotations(session.id, { autoApprove: false });
+    console.log('   ✅ Each upload has its own file; earlier messages keep their own image\n');
+
     // 5. Test Permission Request & Attention Ranking (Blocked State)
     console.log('5️⃣ Testing Permission Request & Attention Ranking...');
     
