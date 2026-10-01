@@ -525,7 +525,50 @@ export interface McpServerConfig {
 }
 
 /** McpServerConfig as sent to the browser, with secret values masked. */
-export type McpServerView = McpServerConfig;
+export type McpServerView = McpServerConfig & {
+  /** A memory MCP server whose knowledge graph CodePit can show. */
+  memoryGraph?: boolean;
+};
+
+export interface MemoryGraphObservation {
+  /** Stamp time as written, e.g. "2026-10-02 00:45"; empty when unstamped. */
+  ts: string;
+  repo: string;
+  /** Session name and id from the stamp. */
+  name: string;
+  id: string;
+  text: string;
+}
+
+export interface MemoryGraphEntity {
+  name: string;
+  /** entityType, e.g. decision or action-item. */
+  type: string;
+  /** From the latest `status=` observation; empty when there is none. */
+  status: string;
+  repo: string;
+  /** Second segment of Task:<Domain>:<slug>, else the first segment of the name. */
+  domain: string;
+  observations: MemoryGraphObservation[];
+}
+
+export interface MemoryGraphRelation {
+  from: string;
+  to: string;
+  type: string;
+}
+
+export interface MemoryGraph {
+  file: string;
+  exists: boolean;
+  /** Size and mtime; send it back as `since` to get `unchanged` until the file changes. */
+  version: string;
+  modified: number | null;
+  entities: MemoryGraphEntity[];
+  relations: MemoryGraphRelation[];
+  /** Lines that were not entity or relation rows. */
+  skipped: number;
+}
 
 export type McpServerInput = Partial<Omit<McpServerConfig, 'id' | 'createdAt' | 'updatedAt'>>;
 

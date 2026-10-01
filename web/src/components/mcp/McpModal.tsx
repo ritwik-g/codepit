@@ -7,6 +7,7 @@ import { Menu } from '../Menu';
 import { AgentFitBadges, McpServerForm, TRANSPORT_LABEL, agentFit } from './McpServerForm';
 import { McpCatalog } from './McpCatalog';
 import { McpEcosystems } from './McpEcosystems';
+import { MemoryGraphView } from './MemoryGraphView';
 import '../../styles/mcp.css';
 
 export type McpTab = 'installed' | 'add' | 'plugins';
@@ -88,7 +89,9 @@ const ServerRow: React.FC<{
   onTest: () => void;
   onEdit: () => void;
   onDelete: () => void;
-}> = ({ server, agents, probe, clashes, agy, onToggle, onTest, onEdit, onDelete }) => {
+  /** Set for memory servers: opens their knowledge graph. */
+  onViewGraph?: () => void;
+}> = ({ server, agents, probe, clashes, agy, onToggle, onTest, onEdit, onDelete, onViewGraph }) => {
   const fits = agentFit(server, agents);
   return (
     <li className={`mcp-server ${server.enabled ? '' : 'is-off'}`}>
@@ -128,6 +131,11 @@ const ServerRow: React.FC<{
       </div>
       <div className="mcp-server-actions">
         <Switch checked={server.enabled} onChange={onToggle} label={<span className="sr-only">Use {server.name}</span>} />
+        {onViewGraph && (
+          <Button size="sm" variant="ghost" icon="branch" onClick={onViewGraph}>
+            Graph
+          </Button>
+        )}
         <Button size="sm" variant="ghost" icon="zap" onClick={onTest} loading={probe?.running}>
           Test
         </Button>
@@ -137,6 +145,7 @@ const ServerRow: React.FC<{
           items={[
             { label: 'Edit', icon: 'edit', onSelect: onEdit },
             { label: 'Test connection', icon: 'zap', onSelect: onTest, disabled: probe?.running },
+            ...(onViewGraph ? [{ label: 'View graph', icon: 'branch' as IconName, onSelect: onViewGraph }] : []),
             'divider',
             { label: 'Remove', icon: 'trash', danger: true, onSelect: onDelete },
           ]}
@@ -168,6 +177,7 @@ export const McpModal: React.FC<{
   const [probes, setProbes] = useState<Record<string, Probe>>({});
   const [editing, setEditing] = useState<McpServer | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<McpServer | null>(null);
+  const [graphOf, setGraphOf] = useState<McpServer | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -370,6 +380,7 @@ export const McpModal: React.FC<{
                     onTest={() => test(s)}
                     onEdit={() => setEditing(s)}
                     onDelete={() => setConfirmDelete(s)}
+                    onViewGraph={s.memoryGraph ? () => setGraphOf(s) : undefined}
                   />
                 ))}
               </ul>
@@ -428,6 +439,8 @@ export const McpModal: React.FC<{
           />
         </Modal>
       )}
+
+      {graphOf && <MemoryGraphView server={graphOf} onClose={() => setGraphOf(null)} />}
 
       {confirmDelete && (
         <Modal

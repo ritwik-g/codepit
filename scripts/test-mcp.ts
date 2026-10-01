@@ -15,6 +15,7 @@ process.env.CODEPIT_APP_DIR = testAppDir;
 const cfg = await import('../server/mcp/config.js');
 const { presetToInput, listPresets } = await import('../server/mcp/presets.js');
 const { probeMcpServer } = await import('../server/mcp/probe.js');
+const { parseObservation, parseMemoryGraph } = await import('../server/mcp/memory-graph.js');
 const { sessionManager } = await import('../server/acp/session-mgr.js');
 const { store } = await import('../server/store.js');
 const { apiRouter } = await import('../server/api.js');
@@ -253,6 +254,66 @@ async function run() {
     assert((await call('DELETE', `/servers/${added.json.server.id}`)).status === 404, 'delete twice is 404');
     const eco = await call('GET', '/ecosystems');
     assert(Array.isArray(eco.json.ecosystems) && eco.json.ecosystems.length === 3, 'ecosystems listed');
+    console.log('   ok');
+
+    console.log('7. Memory graph');
+    const memFile = path.join(testAppDir, 'memory.jsonl');
+    const memAdded = (await call('POST', '/servers/from-preset', { presetId: 'memory', inputs: {}, scope: 'all' })).json.server;
+    assert(memAdded.memoryGraph === true && (fake as any).memoryGraph !== true, 'memory servers are flagged');
+    assert((await call('GET', `/servers/${fake.id}/memory-graph`)).status === 400, 'non-memory server refused');
+    const empty = await call('GET', `/servers/${memAdded.id}/memory-graph`);
+    assert(empty.status === 200 && empty.json.graph.exists === false && empty.json.graph.entities.length === 0, 'missing file is an empty graph');
+    // Point it at a test file, as a user would to share Claude's graph
+    const memServer = (await call('PUT', `/servers/${memAdded.id}`, { ...memAdded, env: { MEMORY_FILE_PATH: memFile } })).json.server;
+    const stamp = '[2026-10-02 00:45] [repo:codepit] [name:codepit-a0] [id:34de0e12-1ca0-4036-aa84-760b21218ddb]';
+    fs.writeFileSync(
+      memFile,
+      [
+        JSON.stringify({ type: 'entity', name: 'Product:Name', entityType: 'decision', observations: [`${stamp} Called CodePit.`] }),
+        JSON.stringify({
+          type: 'entity',
+          name: 'Task:Graph:viewer',
+          entityType: 'action-item',
+          observations: [`${stamp} status=todo — goal`, '[2026-09-30 10:00] [session:old-name 143db6be-65fc-413c-8a8d-06d9c0ef41ee] status=in-progress — legacy stamp', 'status=done unstamped'],
+        }),
+        JSON.stringify({ type: 'relation', from: 'Task:Graph:viewer', to: 'Product:Name', relationType: 'IMPLEMENTS' }),
+        'SECRET=not-a-graph-line',
+        '{"type":"entity","name":"half-writ',
+      ].join('\n')
+    );
+    const g = (await call('GET', `/servers/${memServer.id}/memory-graph`)).json.graph;
+    const task = g.entities.find((e: any) => e.name === 'Task:Graph:viewer');
+    assert(g.exists && g.entities.length === 2 && g.relations.length === 1 && g.skipped === 2, 'entities, relations and skipped lines counted');
+    assert(task.status === 'done' && task.domain === 'Graph' && task.repo === 'codepit', 'latest status wins, domain and repo derived');
+    assert(task.observations[1].name === 'old-name' && task.observations[1].id.startsWith('143db6be'), 'legacy stamp parsed');
+    assert(task.observations[2].ts === '' && task.observations[2].text === 'status=done unstamped', 'unstamped kept as text');
+    assert(!JSON.stringify(g).includes('SECRET'), 'non-graph lines are never echoed');
+    const same = await call('GET', `/servers/${memServer.id}/memory-graph?since=${g.version}`);
+    assert(same.json.unchanged === true, 'unchanged while the file is the same');
+    fs.appendFileSync(memFile, '\n' + JSON.stringify({ type: 'entity', name: 'Auth:X', entityType: 'decision', observations: [] }));
+    assert((await call('GET', `/servers/${memServer.id}/memory-graph?since=${g.version}`)).json.graph.entities.length === 3, 'a change is sent');
+    // The path comes from the saved server only; ${workspace} has no single file
+    await call('PUT', `/servers/${memServer.id}`, { ...memServer, env: { MEMORY_FILE_PATH: '${workspace}/memory.jsonl' } });
+    assert((await call('GET', `/servers/${memServer.id}/memory-graph?file=/etc/passwd`)).status === 400, '${workspace} path refused');
+    // Not a file reader: other extensions, relative paths and a preset id on another command are refused
+    await call('PUT', `/servers/${memServer.id}`, { ...memServer, env: { MEMORY_FILE_PATH: path.join(testAppDir, 'mcp.json.bak') } });
+    assert(/\.jsonl or \.json/.test((await call('GET', `/servers/${memServer.id}/memory-graph`)).json.error), 'other extensions refused');
+    await call('PUT', `/servers/${memServer.id}`, { ...memServer, env: { MEMORY_FILE_PATH: 'memory.jsonl' } });
+    assert(/absolute/.test((await call('GET', `/servers/${memServer.id}/memory-graph`)).json.error), 'relative path refused');
+    const disguised = (await call('POST', '/servers', { name: 'disguised', transport: 'stdio', command: 'node', args: ['x.js'], presetId: 'memory', env: { MEMORY_FILE_PATH: memFile } })).json.server;
+    assert(disguised.memoryGraph === false && (await call('GET', `/servers/${disguised.id}/memory-graph`)).status === 400, 'presetId alone is not enough');
+    // Repeated rows replace each other instead of duplicating graph ids
+    await call('PUT', `/servers/${memServer.id}`, { ...memServer, env: { MEMORY_FILE_PATH: memFile } });
+    const rel = JSON.stringify({ type: 'relation', from: 'Auth:X', to: 'Product:Name', relationType: 'SUPERSEDES' });
+    fs.appendFileSync(memFile, `\n${JSON.stringify({ type: 'entity', name: 'Auth:X', entityType: 'decision', observations: ['second'] })}\n${rel}\n${rel}`);
+    const dup = (await call('GET', `/servers/${memServer.id}/memory-graph`)).json.graph;
+    assert(dup.entities.filter((e: any) => e.name === 'Auth:X').length === 1 && dup.entities.find((e: any) => e.name === 'Auth:X').observations[0].text === 'second', 'last entity row wins');
+    assert(dup.relations.filter((r: any) => r.type === 'SUPERSEDES').length === 1, 'repeated relation kept once');
+    assert(parseObservation('[WIP] not a stamp').ts === '' && parseObservation('[2026-10-02 01:00] note: reverted status=done').text.startsWith('note'), 'only dated stamps');
+    assert(parseMemoryGraph(JSON.stringify({ type: 'entity', name: 'T', entityType: 'action-item', observations: ['status=todo', 'undid status=done'] })).entities[0].status === 'todo', 'status= only at the start counts');
+    await call('PUT', `/servers/${memServer.id}`, { ...memServer, env: {} });
+    assert(/MEMORY_FILE_PATH/.test((await call('GET', `/servers/${memServer.id}/memory-graph`)).json.error), 'no path explained');
+    assert((await call('GET', '/servers/nope/memory-graph')).status === 404, 'unknown server 404');
     srv.close();
     console.log('   ok');
 

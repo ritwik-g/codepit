@@ -9,15 +9,19 @@ import {
   getMcpServer,
   listMcpServers,
   setMcpServerEnabled,
-  toView,
+  toView as maskView,
   updateMcpServer,
 } from './config.js';
+import { MemoryGraphError, isMemoryServer, readMemoryGraph } from './memory-graph.js';
+import type { McpServerConfig, McpServerView } from '../types.js';
 import { listPresets, presetToInput } from './presets.js';
 import { probeMcpServer } from './probe.js';
 import { inspectEcosystems } from './inspect.js';
 import { agySyncStatus, syncAgyMcpQuietly } from './agy-sync.js';
 
 export const mcpRouter = Router();
+
+const toView = (server: McpServerConfig): McpServerView => ({ ...maskView(server), memoryGraph: isMemoryServer(server) });
 
 const id = (req: Request) => String(req.params.id);
 
@@ -101,6 +105,23 @@ mcpRouter.post('/servers/:id/test', async (req, res) => {
     ? req.body.cwd
     : os.homedir();
   res.json({ result: await probeMcpServer(server, cwd), cwd });
+});
+
+// Read-only: the file is the server's own MEMORY_FILE_PATH. ?since=<version> answers
+// { unchanged: true } until the file changes, so the viewer can poll cheaply.
+mcpRouter.get('/servers/:id/memory-graph', (req, res) => {
+  const server = getMcpServer(id(req));
+  if (!server) {
+    res.status(404).json({ error: 'MCP server not found' });
+    return;
+  }
+  try {
+    const graph = readMemoryGraph(server, typeof req.query.since === 'string' ? req.query.since : undefined);
+    res.set('Cache-Control', 'no-store').json(graph ? { graph } : { unchanged: true });
+  } catch (err) {
+    if (err instanceof MemoryGraphError) res.status(err.status).json({ error: err.message });
+    else fail(res, err, 'Failed to read the memory graph');
+  }
 });
 
 mcpRouter.get('/presets', (_req, res) => {

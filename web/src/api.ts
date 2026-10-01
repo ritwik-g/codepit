@@ -9,6 +9,7 @@ import type {
   McpProbeResult,
   McpServer,
   McpServerInput,
+  MemoryGraph,
   QueuedPrompt,
   FileAttachment,
   SessionCostDetail,
@@ -71,6 +72,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ cwd }),
     }),
+  getMemoryGraph: (id: string, since?: string) =>
+    request<{ graph: MemoryGraph } | { unchanged: true }>(
+      `/api/mcp/servers/${id}/memory-graph${since ? `?since=${encodeURIComponent(since)}` : ''}`
+    ),
   getMcpPresets: () => request<{ presets: McpPreset[] }>('/api/mcp/presets'),
   getEcosystems: (refresh = false) =>
     request<{ ecosystems: EcosystemReport[] }>(`/api/mcp/ecosystems${refresh ? '?refresh=1' : ''}`),

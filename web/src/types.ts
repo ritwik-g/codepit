@@ -545,9 +545,44 @@ export interface McpServer {
   description?: string;
   createdAt: number;
   updatedAt: number;
+  /** A memory MCP server whose knowledge graph CodePit can show. */
+  memoryGraph?: boolean;
 }
 
-export type McpServerInput = Omit<McpServer, 'id' | 'createdAt' | 'updatedAt'>;
+export type McpServerInput = Omit<McpServer, 'id' | 'createdAt' | 'updatedAt' | 'memoryGraph'>;
+
+export interface MemoryGraphObservation {
+  ts: string;
+  repo: string;
+  name: string;
+  id: string;
+  text: string;
+}
+
+export interface MemoryGraphEntity {
+  name: string;
+  type: string;
+  status: string;
+  repo: string;
+  domain: string;
+  observations: MemoryGraphObservation[];
+}
+
+export interface MemoryGraphRelation {
+  from: string;
+  to: string;
+  type: string;
+}
+
+export interface MemoryGraph {
+  file: string;
+  exists: boolean;
+  version: string;
+  modified: number | null;
+  entities: MemoryGraphEntity[];
+  relations: MemoryGraphRelation[];
+  skipped: number;
+}
 
 /** How one server stands in agy's own MCP settings, which CodePit keeps in step for Antigravity. */
 export interface AgySyncEntry {
