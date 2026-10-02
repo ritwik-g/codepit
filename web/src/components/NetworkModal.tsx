@@ -43,6 +43,17 @@ const ago = (ts: number) => (relativeTime(ts) === 'now' ? 'just now' : `${relati
 const labelFor = (links: LanInterface[]) => (link: LanInterface) =>
   link.name && links.filter((l) => l.label === link.label).length > 1 ? `${link.label} (${link.name})` : link.label;
 
+/** One entry in the QR picker: the computer's `.local` name, or one of its addresses. */
+interface QrChoice {
+  value: string;
+  label: string;
+  /** What the link points at, shown under the code. */
+  target: string;
+  url: string;
+  /** Absent for the name, which works on whichever network the phone shares. */
+  link?: LanInterface;
+}
+
 /**
  * A pairing link as a QR code, generated in the browser. Always dark on
  * light with a quiet zone, whatever the theme: phone scanners expect that.
@@ -242,8 +253,16 @@ const PairDevices: React.FC<{ devicesVersion?: number }> = ({ devicesVersion }) 
   };
 
   const links = ticket?.lanInterfaces ?? [];
-  const qrLink = links.find((l) => l.address === qrAddress) ?? links[0];
   const linkLabel = labelFor(links);
+  // The name first: a phone paired by name keeps working when the computer's IP changes.
+  // The addresses stay as fallbacks for networks that block mDNS.
+  const choices: QrChoice[] = [
+    ...(ticket?.hostname && ticket.hostnameUrl && links.length > 0
+      ? [{ value: ticket.hostname, label: 'Name (recommended)', target: ticket.hostname, url: ticket.hostnameUrl }]
+      : []),
+    ...links.map((l) => ({ value: l.address, label: linkLabel(l), target: l.address, url: l.url, link: l })),
+  ];
+  const qrLink = choices.find((c) => c.value === qrAddress) ?? choices[0];
 
   return (
     <>
@@ -287,7 +306,7 @@ const PairDevices: React.FC<{ devicesVersion?: number }> = ({ devicesVersion }) 
         ) : (
           <div className="net-qr">
             {qrLink ? (
-              <QrCode url={qrLink.url} label={`QR code to pair a device over ${qrLink.label}, ${qrLink.address}`} />
+              <QrCode url={qrLink.url} label={`QR code to pair a device at ${qrLink.target}`} />
             ) : (
               <div className="net-qr-code">
                 <Spinner size={16} />
@@ -299,42 +318,50 @@ const PairDevices: React.FC<{ devicesVersion?: number }> = ({ devicesVersion }) 
                 The device must be on the same network; you then allow it here. Each code works once, and a new one
                 appears on its own.
               </p>
-              {qrLink && links.length > 1 && links.length <= 3 && (
+              {qrLink && choices.length > 1 && choices.length <= 3 && (
                 <Segmented
-                  label="Network to connect over"
+                  label="Address to connect to"
                   size="sm"
                   block
-                  value={qrLink.address}
+                  value={qrLink.value}
                   onChange={setQrAddress}
-                  options={links.map((l) => ({ value: l.address, label: linkLabel(l), title: l.address }))}
+                  options={choices.map((c) => ({ value: c.value, label: c.label, title: c.target }))}
                 />
               )}
-              {qrLink && links.length > 3 && (
+              {qrLink && choices.length > 3 && (
                 <select
                   className="net-qr-select"
-                  aria-label="Network to connect over"
-                  value={qrLink.address}
+                  aria-label="Address to connect to"
+                  value={qrLink.value}
                   onChange={(e) => setQrAddress(e.target.value)}
                 >
-                  {links.map((l) => (
-                    <option key={l.address} value={l.address}>
-                      {linkLabel(l)}: {l.address}
+                  {choices.map((c) => (
+                    <option key={c.value} value={c.value} title={c.target}>
+                      {c.link ? `${c.label}: ${c.target}` : c.label}
                     </option>
                   ))}
                 </select>
               )}
               {qrLink && (
                 <div className="net-qr-address">
-                  <Badge tone={isUnlikelyReachable(qrLink) ? 'neutral' : 'accent'}>{linkLabel(qrLink)}</Badge>
-                  <code>{qrLink.address}</code>
+                  <Badge tone={qrLink.link && isUnlikelyReachable(qrLink.link) ? 'neutral' : 'accent'}>
+                    {qrLink.link ? qrLink.label : 'Name'}
+                  </Badge>
+                  <code>{qrLink.target}</code>
                 </div>
               )}
-              {qrLink && isUnlikelyReachable(qrLink) && (
+              {qrLink && !qrLink.link && (
+                <p className="net-hint">
+                  Keeps working after this computer restarts or its IP changes. If the device can't open it (some guest
+                  or work Wi-Fi blocks these names), pick an address instead.
+                </p>
+              )}
+              {qrLink?.link && isUnlikelyReachable(qrLink.link) && (
                 <p className="net-qr-warn">
                   <Icon name="alert" size={13} />
                   <span>
-                    Phones usually can't reach a {qrLink.kind === 'vpn' ? 'VPN' : 'virtual machine'} address. Pick your
-                    Wi-Fi or Ethernet link if the phone can't connect.
+                    Phones usually can't reach a {qrLink.link.kind === 'vpn' ? 'VPN' : 'virtual machine'} address. Pick
+                    your Wi-Fi or Ethernet link if the phone can't connect.
                   </span>
                 </p>
               )}
@@ -565,6 +592,22 @@ export const NetworkModal: React.FC<NetworkModalProps> = ({ onClose, devicesVers
               <section className="net-section">
                 <div className="net-label">Addresses</div>
                 <div className="net-rows">
+                  {networkInfo.hostname && networkInfo.hostnameUrl && (
+                    <div className="net-row">
+                      <Badge tone="accent">Name</Badge>
+                      <code className="net-value" title={networkInfo.hostnameUrl}>
+                        {networkInfo.hostnameUrl}
+                      </code>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={copied === 'hostname' ? 'check' : 'copy'}
+                        onClick={() => copy(networkInfo.hostnameUrl!, 'hostname')}
+                      >
+                        {copied === 'hostname' ? 'Copied' : 'Copy'}
+                      </Button>
+                    </div>
+                  )}
                   {links.map((link) => {
                     const url = `http://${link.address}:${networkInfo.port}`;
                     return (
@@ -585,6 +628,11 @@ export const NetworkModal: React.FC<NetworkModalProps> = ({ onClose, devicesVers
                     );
                   })}
                 </div>
+                {networkInfo.hostname && (
+                  <p className="net-hint">
+                    Use the name: it keeps working after the computer restarts or its IP changes.
+                  </p>
+                )}
                 <p className="net-hint">
                   A new device that opens an address shows a pairing code. Pairing holds for the address it was made on;
                   switching to another address means pairing again.
@@ -608,6 +656,24 @@ export const NetworkModal: React.FC<NetworkModalProps> = ({ onClose, devicesVers
                     <Icon name="lock" size={13} />
                     <span>A device that was revoked, or went unused for 30 days, shows a new code. Pair it again.</span>
                   </li>
+                  {networkInfo.hostname && (
+                    <li>
+                      <Icon name="refresh" size={13} />
+                      <span>
+                        A device paired at an IP address has to pair once more at the name: the browser keeps a separate
+                        sign-in for each address.
+                      </span>
+                    </li>
+                  )}
+                  {networkInfo.hostname && (
+                    <li>
+                      <Icon name="globe" size={13} />
+                      <span>
+                        If the name doesn't open on a device, the network may block these names (some guest or work
+                        Wi-Fi). Use an IP address there.
+                      </span>
+                    </li>
+                  )}
                 </ul>
               </section>
             </>

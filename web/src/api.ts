@@ -313,6 +313,10 @@ export interface PairingTicket {
   expiresAt: number;
   /** One pairing link per network, best first. */
   lanInterfaces: Array<LanInterface & { url: string }>;
+  /** The computer's mDNS name (e.g. my-mac.local), or null when it has none. */
+  hostname: string | null;
+  /** Pairing link by that name: it keeps working when the IP changes. */
+  hostnameUrl: string | null;
 }
 
 export interface PairedDevice {
@@ -349,6 +353,10 @@ export interface NetworkInfo {
   /** Addresses LAN devices can reach the server on right now. */
   ips: string[];
   localUrl: string;
+  /** The computer's mDNS name (e.g. my-mac.local), or null when it has none or LAN is off. */
+  hostname: string | null;
+  /** Address by that name: it keeps working when the IP changes. */
+  hostnameUrl: string | null;
   /** The same addresses, labelled by network and ordered best first (Wi-Fi before VM bridges). */
   lanInterfaces: LanInterface[];
   lanEnabled: boolean;

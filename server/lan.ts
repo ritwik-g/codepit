@@ -36,7 +36,14 @@ export interface LanConfig {
   host: string;
   enabled: boolean;
   lockedReason?: string;
+  /** Where interface addresses come from; tests swap in their own. */
+  localIps?: () => string[];
+  /** How often to look for an address change while LAN is on. */
+  pollMs?: number;
 }
+
+/** A restart or DHCP renewal can hand the computer a new IP; listeners follow within this long. */
+const ADDRESS_POLL_MS = 10_000;
 
 interface StoredSettings {
   lanEnabled?: boolean;
@@ -75,12 +82,13 @@ function writeStoredLanEnabled(enabled: boolean): void {
  * Turning LAN off closes these servers and destroys their sockets, upgraded
  * WebSockets included, so connected devices are cut off at once.
  */
-class LanAccess {
+export class LanAccess {
   private config: LanConfig | null = null;
   private listeners = new Map<string, Listener>();
   private errors = new Map<string, string>();
   // Changes run one at a time so a quick on-off-on cannot interleave binds and closes
   private queue: Promise<unknown> = Promise.resolve();
+  private poll: ReturnType<typeof setInterval> | null = null;
 
   async start(config: LanConfig): Promise<LanStatus> {
     this.config = config;
@@ -92,7 +100,7 @@ class LanAccess {
     if (!c) return { enabled: false, host: '127.0.0.1', port: 0, addresses: [], errors: [] };
     // With an explicit HOST the one listener already covers whatever it binds
     const addresses = c.lockedReason
-      ? isLoopbackBind(c.host) ? [] : getLocalNetworkIps()
+      ? isLoopbackBind(c.host) ? [] : this.localIps()
       : [...this.listeners.keys()];
     return {
       enabled: c.enabled,
@@ -124,6 +132,7 @@ class LanAccess {
 
   async close(): Promise<void> {
     await this.serialize(async () => {
+      this.stopPolling();
       for (const address of [...this.listeners.keys()]) this.stop(address);
       this.errors.clear();
     });
@@ -136,10 +145,42 @@ class LanAccess {
     return run;
   }
 
+  private localIps(): string[] {
+    return (this.config?.localIps ?? getLocalNetworkIps)();
+  }
+
+  /**
+   * While LAN is on, rebinds when the computer's addresses change, so a device
+   * using the `.local` name finds a listener on the new IP without anyone
+   * reopening the LAN dialog.
+   */
+  private updatePolling(): void {
+    const c = this.config;
+    if (!c || c.lockedReason || !c.enabled) {
+      this.stopPolling();
+      return;
+    }
+    if (this.poll) return;
+    this.poll = setInterval(() => {
+      const known = new Set([...this.listeners.keys(), ...this.errors.keys()]);
+      const now = this.localIps();
+      if (now.length !== known.size || now.some((a) => !known.has(a))) {
+        this.refresh().catch((err) => console.error('[codepit] Could not follow a network change:', err));
+      }
+    }, c.pollMs ?? ADDRESS_POLL_MS);
+    this.poll.unref();
+  }
+
+  private stopPolling(): void {
+    if (this.poll) clearInterval(this.poll);
+    this.poll = null;
+  }
+
   private async sync(): Promise<LanStatus> {
     const c = this.config!;
+    this.updatePolling();
     if (!c.lockedReason) {
-      const wanted = new Set(c.enabled ? getLocalNetworkIps() : []);
+      const wanted = new Set(c.enabled ? this.localIps() : []);
       for (const address of [...this.listeners.keys()]) {
         if (!wanted.has(address)) this.stop(address);
       }

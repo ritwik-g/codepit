@@ -21,7 +21,7 @@ import {
   refreshClaudeRateLimitsAsync,
 } from './subscriptions.js';
 import { lanAccess } from './lan.js';
-import { describeLanAddresses } from './network.js';
+import { describeLanAddresses, getLanHostname } from './network.js';
 import { getUploadsDir } from './paths.js';
 import { devices } from './devices.js';
 import { isHostClient } from './security.js';
@@ -663,12 +663,17 @@ async function networkInfo(req: Request) {
   const local = isHostClient(req);
   // Re-reading interfaces rebinds LAN listeners, so only the host machine triggers it
   const lan = local ? await lanAccess.refresh() : lanAccess.status();
+  // A name only helps while something is listening on the LAN
+  const hostname = lan.enabled ? getLanHostname() : null;
   return {
     port: lan.port,
     host: lan.host,
     lanEnabled: lan.enabled,
     ips: lan.addresses,
     localUrl: `http://127.0.0.1:${lan.port}`,
+    // The mDNS name (e.g. my-mac.local): unlike the IPs it survives restarts and DHCP changes
+    hostname,
+    hostnameUrl: hostname ? `http://${hostname}:${lan.port}` : null,
     // Same addresses, labelled (Wi-Fi, VM bridge...) and best first, for the QR code picker
     lanInterfaces: await describeLanAddresses(lan.addresses),
     lanErrors: lan.errors,

@@ -15,9 +15,12 @@ fs.writeFileSync(path.join(testAppDir, 'token'), 'old-shared-token');
 delete process.env.CODEPIT_LAN;
 delete process.env.ACP_LAN;
 delete process.env.HOST;
+// A fixed name so the `.local` links can be checked; the real one depends on the machine
+process.env.CODEPIT_HOSTNAME = 'codepit-test.local';
 
 const { startServer } = await import('../server/server.js');
-const { resolveStartupNetwork, getLocalNetworkIps } = await import('../server/network.js');
+const { resolveStartupNetwork, getLocalNetworkIps, getLanHostname } = await import('../server/network.js');
+const { LanAccess } = await import('../server/lan.js');
 const { getSettingsFile } = await import('../server/paths.js');
 const { localhostAllowed } = await import('../server/security.js');
 const { devices, DEVICE_IDLE_MS, MAX_PENDING, MAX_PENDING_PER_IP } = await import('../server/devices.js');
@@ -101,6 +104,38 @@ async function runTests() {
   const pinned = resolveStartupNetwork(true, { HOST: '127.0.0.1', CODEPIT_LAN: '1' });
   expect(pinned.host === '127.0.0.1' && !pinned.lanEnabled && pinned.lockedReason, 'Explicit HOST must win and lock the switch');
   console.log('   ✅ Saved setting, CODEPIT_LAN and HOST applied in order\n');
+
+  console.log('🔤 Host name and following address changes...');
+  expect(getLanHostname() === 'codepit-test.local', `CODEPIT_HOSTNAME should set the name, got ${getLanHostname()}`);
+  expect(getLanHostname({ CODEPIT_HOSTNAME: '' }) === null, 'An empty CODEPIT_HOSTNAME turns the name off');
+  const systemName = getLanHostname({});
+  expect(systemName === null || (systemName.includes('.') && !/^localhost/i.test(systemName)), `System name: ${systemName}`);
+  // The poll alone, with no refresh() call, must follow an address that comes and goes
+  let fakeIps: string[] = [];
+  const watcher = new LanAccess();
+  await watcher.start({
+    handler: (_req, res) => res.end('ok'),
+    attach: () => {},
+    port: 0,
+    host: '127.0.0.1',
+    enabled: true,
+    localIps: () => fakeIps,
+    pollMs: 25,
+  });
+  const waitFor = async (want: string[], what: string) => {
+    const deadline = Date.now() + 2000;
+    while (JSON.stringify(watcher.status().addresses) !== JSON.stringify(want)) {
+      if (Date.now() > deadline) throw new Error(`Timed out: ${what} (have ${JSON.stringify(watcher.status().addresses)})`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+  expect(watcher.status().addresses.length === 0, 'No addresses, no listeners');
+  fakeIps = ['127.0.0.1'];
+  await waitFor(['127.0.0.1'], 'poll should bind a new address');
+  fakeIps = [];
+  await waitFor([], 'poll should drop an address that went away');
+  await watcher.close();
+  console.log(`   ✅ Name from CODEPIT_HOSTNAME (system: ${systemName ?? 'none'}); listeners follow address changes\n`);
 
   const APP_KEY = 'test-app-key-0123456789';
   const handle = await startServer({ port: 0, appKey: APP_KEY });
@@ -264,6 +299,10 @@ async function runTests() {
       `lanInterfaces should list every listening address: ${JSON.stringify(labelled)}`
     );
     expect(labelled.every((l) => l.label && l.url === undefined), 'Labelled addresses carry a label and no sign-in link');
+    expect(
+      on.body.hostname === 'codepit-test.local' && on.body.hostnameUrl === `http://codepit-test.local:${port}`,
+      `The network info gives the name: ${on.body.hostname} ${on.body.hostnameUrl}`
+    );
     const settings = JSON.parse(fs.readFileSync(getSettingsFile(), 'utf8'));
     expect(settings.lanEnabled === true, 'Setting should be saved');
     expect((fs.statSync(getSettingsFile()).mode & 0o777) === 0o600, 'Settings file must be private (0600)');
@@ -342,6 +381,11 @@ async function runTests() {
     expect(
       ticket.body.lanInterfaces.every((l: { address: string; url: string }) => l.url === `http://${l.address}:${port}/?pair=${ticket.body.ticket}`),
       `Ticket links: ${JSON.stringify(ticket.body.lanInterfaces)}`
+    );
+    expect(
+      ticket.body.hostname === 'codepit-test.local' &&
+        ticket.body.hostnameUrl === `http://codepit-test.local:${port}/?pair=${ticket.body.ticket}`,
+      `Ticket link by name: ${ticket.body.hostnameUrl}`
     );
     const viaQr = await requestPairing('192.168.1.51', { ticket: ticket.body.ticket });
     expect(viaQr.status === 200 && viaQr.body.viaTicket === true && !viaQr.body.ticketRejected, `Ticket request: ${JSON.stringify(viaQr.body)}`);
@@ -442,6 +486,16 @@ async function runTests() {
       expect(noCookie.status === 401, `LAN request without a cookie should be 401, got ${noCookie.status}`);
       const withCookie = await call(port, 'GET', '/api/network', { address, host: `${address}:${port}`, headers: deskCookie });
       expect(withCookie.status === 200 && withCookie.body.canToggle === false, 'Real LAN request should work with the cookie and be read-only');
+      // The same listener reached by the `.local` name: Host and Origin carry the name, not the IP
+      const byNameHeaders = { ...deskCookie, origin: `http://codepit-test.local:${port}` };
+      const byName = await call(port, 'GET', '/api/network', { address, host: `codepit-test.local:${port}`, headers: byNameHeaders });
+      expect(byName.status === 200, `A request by name should pass the Host and Origin checks, got ${byName.status} ${JSON.stringify(byName.body)}`);
+      const otherName = await call(port, 'GET', '/api/network', {
+        address,
+        host: `codepit-test.local:${port}`,
+        headers: { ...deskCookie, origin: `http://other-mac.local:${port}` },
+      });
+      expect(otherName.status === 403, `An Origin naming another machine is still refused, got ${otherName.status}`);
       const ws = new WebSocket(`ws://${address}:${port}/ws`, { headers: deskCookie });
       openSockets.push(ws);
       await once(ws, 'open');

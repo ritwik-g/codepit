@@ -268,12 +268,22 @@ device is paired once, and only from the app:
 - **Code:** open the address on the device. It shows a six-digit code; type it
   into the dialog on the host.
 
+Pair by the computer's name, e.g. `http://my-mac.local:7890`. The QR code uses
+it by default and the dialog lists it first. A restart or DHCP renewal can give
+the computer a new IP, which breaks a bookmark or home-screen app pointing at
+the old one; the name keeps working. iOS, macOS, Windows 10+ and current Android
+resolve these names. Some guest and work Wi-Fi networks block them, so the IP
+addresses stay available as fallbacks. While LAN access is on, CodePit checks the
+computer's addresses every 10 seconds and starts listening on a new one by
+itself. `CODEPIT_HOSTNAME` sets a different name, or turns it off when empty.
+
 A paired device gets its own HttpOnly cookie, and the server keeps only a hash of
 it in `~/.codepit/devices.json`. The dialog lists paired devices with when each
 was last used. You can rename or revoke any of them, and a revoked device is
 disconnected at once. A device unused for 30 days has to pair again. A device can
 also forget itself from its own LAN access dialog. Pairing holds for the address
-it was made on. A phone's home-screen app keeps its own cookies, so it pairs as a
+it was made on, so a device paired at an IP address has to pair once more at the
+name. A phone's home-screen app keeps its own cookies, so it pairs as a
 device of its own.
 
 Cross-origin requests are refused. Turn LAN access on only on networks you
@@ -307,6 +317,7 @@ terminal, and with ⌘, Ctrl or Alt held, so ⌘C still copies.
 | `PORT` | `7890` | HTTP and WebSocket port |
 | `HOST` | `127.0.0.1` | Bind address; overrides `CODEPIT_LAN` and locks the LAN switch |
 | `CODEPIT_LAN` | unset | `1` / `0` turns LAN access on or off for this run |
+| `CODEPIT_HOSTNAME` | the Bonjour name (`scutil --get LocalHostName` + `.local`) on macOS, the host name + `.local` elsewhere | Name offered in LAN links and QR codes; empty turns it off |
 | `CODEPIT_LOCALHOST` | unset | `1` lets a browser or script on this machine in without the app, for testing (on in `npm run dev` and in tests) |
 | `CODEPIT_APP_DIR` | `~/.codepit` | Where sessions, settings, credentials and paired devices live |
 | `CODEPIT_ENABLE_MOCK` | unset | `1` lists the Built-in Demo Agent |

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import os from 'node:os';
 import { isLoopbackBind } from './security.js';
 import { appEnv } from './env.js';
@@ -161,4 +161,39 @@ export async function describeLanAddresses(
       return { address, name, ...classifyInterface(name, ports.get(name)) };
     })
   );
+}
+
+const HOSTNAME_TTL_MS = 60_000;
+let hostnameCache: { at: number; name: string | null } | null = null;
+
+function systemLanHostname(): string | null {
+  let name = '';
+  if (process.platform === 'darwin') {
+    // The Bonjour name; os.hostname() can be a name DHCP or DNS handed out
+    try {
+      const local = execFileSync('scutil', ['--get', 'LocalHostName'], { timeout: 1500, encoding: 'utf8' }).trim();
+      if (local) name = `${local}.local`;
+    } catch {
+      // fall back to os.hostname() below
+    }
+  }
+  if (!name) {
+    const host = os.hostname().trim();
+    // A bare name is what mDNS (Avahi on Linux) answers to under .local
+    name = host && !host.includes('.') ? `${host}.local` : host;
+  }
+  return name && !/^localhost(\.local)?$/i.test(name) ? name : null;
+}
+
+/**
+ * The name other devices can reach this computer by over mDNS, e.g. `Ritwiks-MacBook-Air.local`.
+ * Unlike an IP it survives restarts and DHCP changes. `CODEPIT_HOSTNAME` overrides it,
+ * and set to empty turns it off. Null when there is no usable name.
+ */
+export function getLanHostname(env: NodeJS.ProcessEnv = process.env): string | null {
+  const override = appEnv('HOSTNAME', env);
+  if (override !== undefined) return override.trim() || null;
+  if (hostnameCache && Date.now() - hostnameCache.at < HOSTNAME_TTL_MS) return hostnameCache.name;
+  hostnameCache = { at: Date.now(), name: systemLanHostname() };
+  return hostnameCache.name;
 }

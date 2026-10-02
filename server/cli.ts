@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from './server.js';
 import { appEnv } from './env.js';
 import { localhostAllowed } from './security.js';
+import { getLanHostname } from './network.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +20,10 @@ console.log(`  👉 Local:   ${handle.url}`);
 if (!localhostAllowed()) {
   console.log(`  🔒 Browsers on this computer are refused: CodePit opens only in the CodePit app.`);
   console.log(`     CODEPIT_LOCALHOST=1 allows them, for testing (npm run dev sets it).`);
+}
+const lanHostname = lan.enabled && lan.addresses.length > 0 ? getLanHostname() : null;
+if (lanHostname) {
+  console.log(`  👉 Network: http://${lanHostname}:${port}  (stays the same when the IP changes)`);
 }
 for (const ip of lan.addresses) {
   console.log(`  👉 Network: http://${ip}:${port}`);

@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { clearDeviceCookie, deviceCookie, devices, PairingError } from './devices.js';
 import { lanAccess } from './lan.js';
-import { describeLanAddresses } from './network.js';
+import { describeLanAddresses, getLanHostname } from './network.js';
 import { getRemoteAddress, isHostClient, isLoopbackAddress, type AccessDecision } from './security.js';
 
 /**
@@ -88,9 +88,13 @@ pairingRouter.post('/pair/ticket', hostOnly, async (_req: Request, res: Response
   }
   const { ticket, expiresAt } = devices.createTicket();
   const interfaces = await describeLanAddresses(lan.addresses);
+  const hostname = getLanHostname();
   res.json({
     ticket,
     expiresAt,
+    // The mDNS name keeps working when the IP changes, so it is the link to offer first
+    hostname,
+    hostnameUrl: hostname ? `http://${hostname}:${lan.port}/?pair=${ticket}` : null,
     lanInterfaces: interfaces.map((iface) => ({ ...iface, url: `http://${iface.address}:${lan.port}/?pair=${ticket}` })),
   });
 });

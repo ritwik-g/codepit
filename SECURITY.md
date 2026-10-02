@@ -22,6 +22,16 @@ within a week. There is no bounty.
   `SameSite=Strict` cookie. Only its SHA-256 is stored, in `~/.codepit/devices.json`
   (owner-only). A device unused for 30 days expires, and revoking one closes its
   open connections at once. Cross-origin requests are refused.
+- LAN devices are pointed at the computer's mDNS name (`<name>.local`) so the
+  address survives IP changes. The name changes nothing in the checks above: an
+  Origin must still match the Host the request was sent to, and the device
+  cookie has no `Domain`, so it is sent only to the exact host it was paired on.
+  A device paired at an IP address pairs once more at the name. Anyone on the
+  network can answer for a `.local` name and so receive what a device sends to
+  it, cookie included. That is the same exposure as an attacker taking over the
+  IP (ARP spoofing) or reading plain HTTP on the network, which is why LAN access
+  is for networks you trust.
+  `CODEPIT_HOSTNAME` sets the name, or turns it off when empty.
 - The agents run as you, with your logins, in the folders you open. CodePit
   carries out the file reads, writes and terminal commands they ask for, so
   anything an agent could do in your terminal it can do here. Approvals and the
