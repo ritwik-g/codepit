@@ -65,6 +65,11 @@ function readManaged(): Set<string> {
   }
 }
 
+/** Names CodePit itself wrote into agy's file, so they aren't another source's server of that name. */
+export function agyManagedNames(): Set<string> {
+  return readManaged();
+}
+
 function writeManaged(names: Set<string>): void {
   ensurePrivateDir(getAppDir());
   fs.writeFileSync(managedFile(), JSON.stringify({ version: 1, managed: [...names].sort() }, null, 2), { mode: FILE_MODE });

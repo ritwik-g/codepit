@@ -14,7 +14,7 @@ process.env.CODEPIT_APP_DIR = path.join(dir, 'app');
 process.env.CODEPIT_AGY_MCP_CONFIG = agyFile;
 
 const { createMcpServer, updateMcpServer, setMcpServerEnabled, deleteMcpServer } = await import('../server/mcp/config.js');
-const { syncAgyMcp } = await import('../server/mcp/agy-sync.js');
+const { syncAgyMcp, agyManagedNames } = await import('../server/mcp/agy-sync.js');
 
 const readAgy = () => JSON.parse(fs.readFileSync(agyFile, 'utf8')).mcpServers as Record<string, any>;
 const state = (status: ReturnType<typeof syncAgyMcp>, name: string) => status.entries.find((e) => e.name === name);
@@ -58,6 +58,12 @@ test('servers for Antigravity are written in agy\'s own shape; the rest of the f
   assert.equal(state(status, 'CastAI')?.state, 'synced');
   assert.equal(agy['claude-only'], undefined);
   assert.equal(agy['switched-off'], undefined);
+});
+
+test('names CodePit wrote into agy are reported as managed, so the clash check can skip them', () => {
+  const ours = agyManagedNames();
+  assert.ok(ours.has('CastAI'), 'a server CodePit wrote into agy is managed');
+  assert.ok(!ours.has('mine'), "the user's own agy server is not");
 });
 
 test('an identical entry the user added by hand is adopted; a different one with the name is a clash, untouched', () => {

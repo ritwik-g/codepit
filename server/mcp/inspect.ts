@@ -4,6 +4,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { onPath } from './presets.js';
+import { agyManagedNames } from './agy-sync.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -243,9 +244,11 @@ async function inspectAntigravity(): Promise<EcosystemReport> {
     else report.warnings.push(`agy plugin list failed: ${plugins.reason?.message ?? plugins.reason}`);
     // Keep only the leading name: list lines may go on to show a command or URL
     if (servers.status === 'fulfilled') {
+      // Servers CodePit synced into agy's file are CodePit's own, not agy's, so they must not count as a name clash
+      const ours = agyManagedNames();
       report.mcpServers = servers.value
         .map((line) => line.split(/[\s:]+/)[0])
-        .filter(Boolean)
+        .filter((name) => name && !ours.has(name))
         .map((name) => ({ name }));
     }
     else report.warnings.push(`agy mcp list failed: ${servers.reason?.message ?? servers.reason}`);
