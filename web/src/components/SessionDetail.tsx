@@ -217,15 +217,15 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
 
   const handleRollback = async (turnId?: string, action: RollbackAction = 'revert_to_this') => {
     if (rollingBack) return;
-    if (action === 'undo_last') {
-      if (!confirm('Undo the last message/turn in this conversation?')) return;
-    } else if (action === 'revert_to_this') {
-      if (!confirm('Rewind conversation to this point? All subsequent messages will be undone.')) return;
-    } else if (action === 'revert_before_this' && turnId) {
-      const idx = session.turns.findIndex((t) => t.id === turnId);
-      const isUser = idx !== -1 && session.turns[idx].role === 'user';
-      if (!isUser && !confirm('Delete this turn and all subsequent messages?')) return;
-    }
+    // Every rewind stops the agent: its own transcript cannot be cut back, so the next message starts a new agent session with a summary
+    const what =
+      action === 'undo_last'
+        ? 'Undo the last message in this conversation?'
+        : action === 'revert_to_this'
+          ? 'Rewind the conversation to this point? All later messages will be undone.'
+          : 'Remove this message and everything after it?';
+    const running = session.state === 'working' || session.agentTasks?.some((t) => t.status === 'running') ? ' Anything the agent is running now, including background work, will be stopped.' : '';
+    if (!confirm(`${what}\n\nThis also ends the current agent session. Your next message starts a new one that only gets a summary of the conversation, not the agent's own memory.${running}`)) return;
 
     setRollingBack(true);
     try {

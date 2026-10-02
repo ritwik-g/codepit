@@ -95,12 +95,50 @@ const TurnAttachments: React.FC<{ attachments: FileAttachment[]; onPreviewImage:
   </div>
 );
 
+/**
+ * Touch screens have no hover, so the rewind and delete buttons would sit under the thumb while
+ * scrolling. They stay hidden until the turn is pressed and held; a tap elsewhere hides them again.
+ */
+function useLongPressReveal() {
+  const [open, setOpen] = useState(false);
+  const timer = useRef<number>();
+  const origin = useRef({ x: 0, y: 0 });
+  const cancel = () => window.clearTimeout(timer.current);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent) => {
+      if (!(e.target as Element | null)?.closest('.ws-turn-actions')) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [open]);
+  useEffect(() => cancel, []);
+  const props = {
+    onPointerDown: (e: React.PointerEvent) => {
+      if ((e.target as Element).closest('button, a, img')) return;
+      origin.current = { x: e.clientX, y: e.clientY };
+      cancel();
+      timer.current = window.setTimeout(() => setOpen(true), 450);
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      if (Math.hypot(e.clientX - origin.current.x, e.clientY - origin.current.y) > 8) cancel();
+    },
+    onPointerUp: cancel,
+    onPointerCancel: cancel,
+    // The long press must not also open the browser's context menu over the buttons
+    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+  };
+  return { open, props };
+}
+
 const UserTurn: React.FC<{
   turn: TurnMessage;
   onRollback: (turnId: string, action: RollbackAction) => void;
   onPreviewImage: (src: string) => void;
-}> = ({ turn, onRollback, onPreviewImage }) => (
-  <div className="ws-turn ws-turn-user">
+}> = ({ turn, onRollback, onPreviewImage }) => {
+  const reveal = useLongPressReveal();
+  return (
+  <div className={cx('ws-turn ws-turn-user', reveal.open && 'actions-open')} {...reveal.props}>
     <div className="ws-user-meta">
       <span className="ws-turn-actions">
         <IconButton
@@ -132,7 +170,8 @@ const UserTurn: React.FC<{
     )}
     {turn.content && <div className="ws-user-bubble">{turn.content}</div>}
   </div>
-);
+  );
+};
 
 const AgentTurn: React.FC<{
   session: AcpSession;
@@ -148,9 +187,10 @@ const AgentTurn: React.FC<{
   // Back-to-back agent turns (e.g. a follow-up after an approval or a
   // background task finishing) read as one reply: skip the repeated header.
   const continuesReply = prev?.role === 'agent' && (prev.agentId || session.agentId) === turnAgentId;
+  const reveal = useLongPressReveal();
 
   return (
-    <div className={cx('ws-turn ws-turn-agent', continuesReply && 'is-continuation')}>
+    <div className={cx('ws-turn ws-turn-agent', continuesReply && 'is-continuation', reveal.open && 'actions-open')} {...reveal.props}>
       <div className="ws-agent-head">
         {!continuesReply && (
           <>

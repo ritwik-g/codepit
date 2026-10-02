@@ -2464,9 +2464,20 @@ button.ws-sheet-row:active:not(:disabled) {
     display: none;
   }
 
-  /* No hover on touch: keep turn actions reachable but quiet. */
-  .ws-turn-actions {
+  /* No hover on touch, and always-visible buttons get hit while scrolling: a turn's actions
+     (rewind, delete) appear on long press. */
+  .ws-turn-actions,
+  .ws-turn:hover .ws-turn-actions,
+  .ws-turn:focus-within .ws-turn-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .ws-turn.actions-open .ws-turn-actions {
     opacity: 1;
+    pointer-events: auto;
+  }
+  .ws-turn {
+    -webkit-touch-callout: none;
   }
   .ws-turn-agent.is-continuation .ws-agent-head {
     display: none;
