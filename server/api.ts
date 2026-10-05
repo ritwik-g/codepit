@@ -28,6 +28,8 @@ import { isHostClient } from './security.js';
 import { mcpRouter } from './mcp/routes.js';
 import { advertisedOptions, effortChoicesFor, effortError, isEffortValue, isFavoriteList, markNewModels, readFavoriteModels, writeFavoriteModels } from './acp/agent-options.js';
 import { refreshCodexRateLimitsAsync } from './codex-limits.js';
+import { readWorkflowAgent, readWorkflowRun } from './acp/workflow-run.js';
+import type { AgentTask } from './types.js';
 
 export const apiRouter = Router();
 
@@ -151,6 +153,34 @@ apiRouter.get('/sessions/:id', (req: Request, res: Response) => {
     return;
   }
   res.json({ session });
+});
+
+// 4b. A Claude workflow run's phases and agents, and one agent's steps (read from its run folder)
+function workflowTask(req: Request, res: Response): AgentTask | undefined {
+  const session = sessionManager.getSession(sid(req));
+  const task = session?.agentTasks?.find((t) => t.id === String(req.params.taskId));
+  if (!session || !task || task.kind !== 'workflow') {
+    res.status(404).json({ error: 'Workflow not found' });
+    return undefined;
+  }
+  return task;
+}
+
+apiRouter.get('/sessions/:id/tasks/:taskId/workflow', (req: Request, res: Response) => {
+  const task = workflowTask(req, res);
+  if (!task) return;
+  res.json({ run: readWorkflowRun(task) ?? null });
+});
+
+apiRouter.get('/sessions/:id/tasks/:taskId/workflow/agents/:agentId', (req: Request, res: Response) => {
+  const task = workflowTask(req, res);
+  if (!task) return;
+  const detail = readWorkflowAgent(task, String(req.params.agentId));
+  if (!detail) {
+    res.status(404).json({ error: 'Agent not found in this workflow run' });
+    return;
+  }
+  res.json(detail);
 });
 
 // 5. Send prompt to session

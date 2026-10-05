@@ -655,6 +655,58 @@ export interface AgentTask {
   segments?: TurnSegment[];
 }
 
+// ------------------------------------------------------------ Workflow runs
+
+/**
+ * One agent inside a Claude workflow run. ACP only reports the run's totals, so
+ * this is read from the run's folder on disk (journal and per-agent transcript).
+ */
+export interface WorkflowAgentInfo {
+  /** Claude's agent id (agent-<id>.jsonl). */
+  id: string;
+  /** The label the script gave it, e.g. "research:hdmi-cec". */
+  label: string;
+  phase?: string;
+  status: AgentTaskStatus;
+  startedAt?: number;
+  /** Time of its last transcript entry; the end time once it is not running. */
+  lastActivityAt?: number;
+  toolUses: number;
+  outputTokens: number;
+  model?: string;
+  /** The tool it called last, while it runs. */
+  lastTool?: string;
+  /** The first line of what it last said. */
+  lastText?: string;
+}
+
+export interface WorkflowPhaseInfo {
+  title: string;
+  detail?: string;
+}
+
+export interface WorkflowRunInfo {
+  runId?: string;
+  name?: string;
+  description?: string;
+  /** Phases from the script's meta block, then any phase only the agents name. */
+  phases: WorkflowPhaseInfo[];
+  agents: WorkflowAgentInfo[];
+  /** How many times the run was launched (a resume launches it again). */
+  launches: number;
+}
+
+/** One workflow agent's own activity, as tool calls and segments the task views already render. */
+export interface WorkflowAgentDetail {
+  agent: WorkflowAgentInfo;
+  /** The task the script computed for it. */
+  prompt?: string;
+  segments: TurnSegment[];
+  calls: ToolCallRecord[];
+  /** What it returned: its structured output or final message. */
+  result?: string;
+}
+
 /** One streamed chunk of a task's text or reasoning; the client appends it to the named segment. */
 export interface AgentTaskTextDelta {
   taskId: string;

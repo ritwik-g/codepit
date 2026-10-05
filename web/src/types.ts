@@ -697,6 +697,43 @@ export interface AgentTask {
   segments?: TurnSegment[];
 }
 
+/** One agent inside a Claude workflow run, read from the run's folder on the host. */
+export interface WorkflowAgentInfo {
+  id: string;
+  label: string;
+  phase?: string;
+  status: AgentTaskStatus;
+  startedAt?: number;
+  lastActivityAt?: number;
+  toolUses: number;
+  outputTokens: number;
+  model?: string;
+  lastTool?: string;
+  lastText?: string;
+}
+
+export interface WorkflowPhaseInfo {
+  title: string;
+  detail?: string;
+}
+
+export interface WorkflowRunInfo {
+  runId?: string;
+  name?: string;
+  description?: string;
+  phases: WorkflowPhaseInfo[];
+  agents: WorkflowAgentInfo[];
+  launches: number;
+}
+
+export interface WorkflowAgentDetail {
+  agent: WorkflowAgentInfo;
+  prompt?: string;
+  segments: TurnSegment[];
+  calls: ToolCallRecord[];
+  result?: string;
+}
+
 /** One streamed chunk of a task's text or reasoning; the client appends it to the named segment. */
 export interface AgentTaskTextDelta {
   taskId: string;

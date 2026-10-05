@@ -18,7 +18,7 @@ import type {
   ThinkingEffort,
   UsageReport,
   UserAnnotations,
-  VendorSubscriptionInfo, AgySyncStatus } from './types';
+  VendorSubscriptionInfo, AgySyncStatus, WorkflowRunInfo, WorkflowAgentDetail } from './types';
 
 /** Thrown for a non-2xx reply, with the status so callers need not parse the message. */
 export class HttpError extends Error {
@@ -82,6 +82,10 @@ export const api = {
   getAgents: () => request<{ agents: AgentDescriptor[] }>('/api/agents'),
   getSessions: () => request<{ sessions: SessionSummary[] }>('/api/sessions'),
   getSession: (id: string) => request<{ session: AcpSession }>(`/api/sessions/${id}`),
+  getWorkflowRun: (id: string, taskId: string) =>
+    request<{ run: WorkflowRunInfo | null }>(`/api/sessions/${id}/tasks/${encodeURIComponent(taskId)}/workflow`),
+  getWorkflowAgent: (id: string, taskId: string, agentId: string) =>
+    request<WorkflowAgentDetail>(`/api/sessions/${id}/tasks/${encodeURIComponent(taskId)}/workflow/agents/${encodeURIComponent(agentId)}`),
   getImportableAgentSessions: (agentId: string, cwd: string) =>
     request<{
       sessions: Array<{ id: string; agentId: string; label: string; updatedAt: number; transcriptPath?: string }>;

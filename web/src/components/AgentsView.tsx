@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { AcpSession, AgentTask, AgentTaskStatus, ToolCallRecord, TurnSegment } from '../types';
-import { Badge, Button, EmptyState, Icon, IconButton, Spinner, type IconName, type Tone } from '../ui';
+import type { AcpSession, AgentTask, ToolCallRecord, TurnSegment } from '../types';
+import { Badge, Button, EmptyState, Icon, IconButton, Segmented, Spinner, type IconName } from '../ui';
 import { MarkdownContent } from './MarkdownContent';
-import { IoPanel, OutputText, SubagentCard, ThoughtRow, ToolRow } from './AgentTurn';
+import { IoPanel, OutputText } from './AgentTurn';
+import { Timeline } from './TaskTimeline';
 import { cx, formatTime, formatTokens } from './sessionMeta';
-import { copyToClipboard, formatDuration, isActive, subagentResult } from '../toolDisplay';
+import { copyToClipboard, formatDuration, subagentResult } from '../toolDisplay';
 import { VendorIcon } from './VendorLogos';
 import { useOpenAgentSession } from './agentTaskNav';
+import { STATUS, useNow } from './taskStatus';
+import { SubagentBoard, WorkflowRunPanel } from './WorkflowView';
 import '../styles/agents.css';
 
 /**
@@ -14,13 +17,6 @@ import '../styles/agents.css';
  * the agent launched, and a focused view of one (or several, merged in time
  * order) showing only its own prompt, messages, tool calls and result.
  */
-
-const STATUS: Record<AgentTaskStatus, { label: string; tone: Tone }> = {
-  running: { label: 'Running', tone: 'accent' },
-  completed: { label: 'Done', tone: 'ok' },
-  failed: { label: 'Failed', tone: 'danger' },
-  stopped: { label: 'Stopped', tone: 'neutral' },
-};
 
 function kindView(task: AgentTask): { icon: IconName; label: string } {
   if (task.kind === 'subagent') return { icon: 'bot', label: 'Subagent' };
@@ -68,17 +64,6 @@ function segmentsOf(task: AgentTask, calls: Map<string, ToolCallRecord>): TurnSe
 function taskDuration(task: AgentTask, now: number): string | null {
   if (task.usage?.durationMs != null && task.status !== 'running') return formatDuration(task.usage.durationMs);
   return formatDuration((task.endedAt ?? now) - task.startedAt);
-}
-
-/** Ticks once a second while `active`, so running durations count up. */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [active]);
-  return now;
 }
 
 /**
@@ -160,6 +145,8 @@ export const AgentsPanel: React.FC<{
 
 // ----------------------------------------------------------------- List
 
+const LAYOUT_KEY = 'codepit_agents_layout';
+
 const TaskList: React.FC<{ session: AcpSession; tasks: AgentTask[]; onOpen: (ids: string[]) => void }> = ({
   session,
   tasks,
@@ -173,6 +160,7 @@ const TaskList: React.FC<{ session: AcpSession; tasks: AgentTask[]; onOpen: (ids
   const selectable = tasks.length > 1;
   const live = selected.filter((id) => tasks.some((t) => t.id === id));
 
+  const [layout, setLayout] = useState<'list' | 'board'>(() => (localStorage.getItem(LAYOUT_KEY) === 'board' ? 'board' : 'list'));
   useEffect(() => setSelected([]), [session.id]);
 
   if (tasks.length === 0) {
@@ -185,6 +173,8 @@ const TaskList: React.FC<{ session: AcpSession; tasks: AgentTask[]; onOpen: (ids
     );
   }
 
+  const hasSubagents = tasks.some((t) => t.kind === 'subagent');
+  const showBoard = layout === 'board' && hasSubagents;
   const toggle = (id: string) => setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const group = (label: string, items: AgentTask[]) =>
     items.length > 0 && (
@@ -212,12 +202,36 @@ const TaskList: React.FC<{ session: AcpSession; tasks: AgentTask[]; onOpen: (ids
 
   return (
     <>
-      <header className="agents-head">
-        <h2 className="agents-title">Subagents</h2>
-        <p className="agents-desc">
-          Subagents, background commands and workflows this session's agent started. Open one to see only its own work.
-        </p>
+      <header className="agents-head-row">
+        <div className="agents-head">
+          <h2 className="agents-title">Subagents</h2>
+          <p className="agents-desc">
+            Subagents, background commands and workflows this session's agent started. Open one to see only its own work.
+          </p>
+        </div>
+        {hasSubagents && (
+          <Segmented
+            size="sm"
+            label="Layout"
+            value={showBoard ? 'board' : 'list'}
+            onChange={(v) => {
+              setLayout(v);
+              localStorage.setItem(LAYOUT_KEY, v);
+            }}
+            options={[
+              { value: 'list', label: 'List', icon: 'list' },
+              { value: 'board', label: 'Board', icon: 'grid', title: 'Subagents as a board, one lane per message that started them' },
+            ]}
+          />
+        )}
       </header>
+      {showBoard ? (
+        <>
+          <SubagentBoard session={session} tasks={tasks} callsOf={(t) => callsOf(t, calls)} onOpen={(id) => onOpen([id])} />
+          {group('Workflows and background work', tasks.filter((t) => t.kind !== 'subagent'))}
+        </>
+      ) : (
+        <>
       {live.length > 0 && (
         <div className="agents-selectbar" role="region" aria-label="Selected agents">
           <span className="agents-selectbar-count">{live.length} selected</span>
@@ -231,6 +245,8 @@ const TaskList: React.FC<{ session: AcpSession; tasks: AgentTask[]; onOpen: (ids
       )}
       {group('Running', running)}
       {group('Finished', finished)}
+        </>
+      )}
     </>
   );
 };
@@ -339,7 +355,7 @@ const FocusedView: React.FC<{
       </nav>
 
       {single ? (
-        <SingleTask task={single} calls={calls} now={now} />
+        <SingleTask session={session} task={single} calls={calls} now={now} />
       ) : (
         <MergedTasks tasks={tasks} calls={calls} now={now} onOpen={onOpen} />
       )}
@@ -393,7 +409,7 @@ const PROMPT_LABEL: Record<AgentTask['kind'], string> = {
   workflow: 'Workflow',
 };
 
-const SingleTask: React.FC<{ task: AgentTask; calls: Map<string, ToolCallRecord>; now: number }> = ({ task, calls, now }) => {
+const SingleTask: React.FC<{ session: AcpSession; task: AgentTask; calls: Map<string, ToolCallRecord>; now: number }> = ({ session, task, calls, now }) => {
   const segments = segmentsOf(task, calls);
   const launch = task.toolCallId ? calls.get(task.toolCallId) : undefined;
   const hasText = segments.some((s) => s.kind === 'text' && s.text.trim());
@@ -418,7 +434,22 @@ const SingleTask: React.FC<{ task: AgentTask; calls: Map<string, ToolCallRecord>
         </div>
       )}
 
-      {(task.kind !== 'background' || segments.length > 0) && (
+      {task.kind === 'workflow' && segments.length === 0 ? (
+        <WorkflowRunPanel
+          key={task.id}
+          session={session}
+          task={task}
+          fallback={
+            <section className="agents-activity" aria-label="Activity">
+              <h3 className="agents-group-label">Activity</h3>
+              <p className="agents-note">
+                Claude reports a workflow’s progress totals over ACP, not the agents inside it, and this run’s folder is not
+                known or not on this machine.
+              </p>
+            </section>
+          }
+        />
+      ) : (task.kind !== 'background' || segments.length > 0) && (
         <section className="agents-activity" aria-label="Activity">
           <h3 className="agents-group-label">Activity</h3>
           {segments.length > 0 ? (
@@ -539,56 +570,6 @@ const TaskDetails: React.FC<{ task: AgentTask }> = ({ task }) => {
         ))}
       </dl>
     </section>
-  );
-};
-
-/** Renders a task's segments: messages as prose, runs of calls and reasoning as a compact list. */
-const Timeline: React.FC<{ segments: TurnSegment[]; calls: Map<string, ToolCallRecord>; taskRunning: boolean }> = ({
-  segments,
-  calls,
-  taskRunning,
-}) => {
-  const blocks: Array<{ key: string; text?: string; items?: TurnSegment[]; subagent?: ToolCallRecord }> = [];
-  for (const seg of segments) {
-    if (seg.kind === 'text') {
-      if (seg.text.trim()) blocks.push({ key: seg.id, text: seg.text });
-      continue;
-    }
-    const call = seg.kind === 'tool' ? calls.get(seg.toolCallId) : undefined;
-    if (seg.kind === 'tool' && !call) continue;
-    if (call?.isSubagent) {
-      blocks.push({ key: seg.id, subagent: call });
-      continue;
-    }
-    const last = blocks[blocks.length - 1];
-    if (last?.items) last.items.push(seg);
-    else blocks.push({ key: seg.id, items: [seg] });
-  }
-  const childrenOf = (id: string) => [...calls.values()].filter((c) => c.parentToolUseId === id);
-
-  return (
-    <div className="turn-timeline">
-      {blocks.map((b) => {
-        if (b.text != null) {
-          return (
-            <div key={b.key} className="timeline-message">
-              <MarkdownContent content={b.text} />
-            </div>
-          );
-        }
-        if (b.subagent) return <SubagentCard key={b.key} call={b.subagent} childCalls={childrenOf(b.subagent.id)} />;
-        return (
-          <div key={b.key} className="activity-items">
-            {b.items!.map((seg) => {
-              if (seg.kind === 'thought') return <ThoughtRow key={seg.id} text={seg.text} live={false} />;
-              const call = calls.get((seg as Extract<TurnSegment, { kind: 'tool' }>).toolCallId)!;
-              // A call still marked as going in a task that has ended was cut off
-              return <ToolRow key={seg.id} call={call} interrupted={!taskRunning && isActive(call)} />;
-            })}
-          </div>
-        );
-      })}
-    </div>
   );
 };
 

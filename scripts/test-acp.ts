@@ -411,6 +411,45 @@ async function runTests() {
     }
     console.log('   ✅ Subagent sessions stream into their own subagent, nested ones included, with labelled approvals\n');
 
+    // 9b3. ACP subagents RFD: subagent_update announces the child, its idle state ends it with usage,
+    // and delegating to the same child again reopens the same task
+    console.log('9️⃣b3 Testing subagent_update (ACP subagents RFD)...');
+    const rfdSession = await sessionManager.createSession({ agentId: 'mock', cwd: testDir, title: 'RFD subagents' });
+    await waitForIdle(rfdSession.id);
+    await sessionManager.sendPrompt(rfdSession.id, 'Use an rfd subagent');
+    await waitForIdle(rfdSession.id);
+    let rfd = sessionManager.getSession(rfdSession.id)!;
+    const rfdTasks = () => (sessionManager.getSession(rfdSession.id)!.agentTasks || []).filter((t) => t.kind === 'subagent');
+    const reviewer = rfdTasks()[0];
+    if (rfdTasks().length !== 1 || reviewer.title !== 'Reviewer' || reviewer.status !== 'completed' || reviewer.usage?.totalTokens !== 1234) {
+      throw new Error(`subagent_update should give one completed Reviewer task with its usage: ${JSON.stringify(rfdTasks())}`);
+    }
+    const diffCall = rfd.turns.flatMap((t) => t.toolCalls || []).find((c) => c.title === 'git diff');
+    if (diffCall?.agentTaskId !== reviewer.id) throw new Error(`The child's call should be filed under it: ${JSON.stringify(diffCall)}`);
+    if (!rfd.turns.some((t) => t.role === 'agent' && t.content?.includes('The reviewer is done')) || rfd.turns.some((t) => t.content?.includes('The diff looks fine'))) {
+      throw new Error('The child’s reply must stay out of the main conversation');
+    }
+    await sessionManager.sendPrompt(rfdSession.id, 'Ask the rfd subagent again');
+    await waitForIdle(rfdSession.id);
+    rfd = sessionManager.getSession(rfdSession.id)!;
+    const again = rfdTasks();
+    const diffCalls = rfd.turns.flatMap((t) => t.toolCalls || []).filter((c) => c.title === 'git diff');
+    if (again.length !== 1 || again[0].status !== 'completed' || diffCalls.length !== 2 || diffCalls.some((c) => c.agentTaskId !== again[0].id)) {
+      throw new Error(`Delegating to the same child again should reuse its task: ${JSON.stringify(again)} calls=${JSON.stringify(diffCalls.map((c) => c.agentTaskId))}`);
+    }
+    // Cancelled, then delegated again: the new run ends as completed, not as the old Stopped
+    await sessionManager.sendPrompt(rfdSession.id, 'Use the rfd subagent, then cancel it');
+    await waitForIdle(rfdSession.id);
+    if (rfdTasks()[0].status !== 'stopped') throw new Error(`A cancelled child should be stopped: ${JSON.stringify(rfdTasks())}`);
+    await sessionManager.sendPrompt(rfdSession.id, 'Use the rfd subagent once more');
+    await waitForIdle(rfdSession.id);
+    const reopened = rfdTasks()[0];
+    const reviewerCall = sessionManager.getSession(rfdSession.id)!.turns.flatMap((t) => t.toolCalls || []).find((c) => c.id === reopened.toolCallId);
+    if (reopened.status !== 'completed' || reopened.summary || reviewerCall?.backgroundState || reviewerCall?.backgroundSummary) {
+      throw new Error(`A child delegated again after a cancel should end completed, without the old Stopped: ${JSON.stringify({ reopened, reviewerCall })}`);
+    }
+    console.log('   ✅ subagent_update children are tracked, finished with usage, and reused when delegated again\n');
+
     // 9c. Messages sent during a turn queue behind it and drain in order; a stopped turn pauses the queue
     console.log('9️⃣c Testing the prompt queue...');
     const qSession = await sessionManager.createSession({ agentId: 'mock', cwd: testDir, title: 'Queue' });

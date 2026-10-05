@@ -283,6 +283,18 @@ function refreshFromCall(task: AgentTask, call: ToolCallRecord): void {
     if (command && !task.prompt) task.prompt = command;
   }
   if (!task.title) task.title = task.kind === 'subagent' ? 'Subagent' : task.kind === 'workflow' ? 'Workflow' : 'Background task';
+  // A subagent session given more work after it went idle (ACP subagent_update) runs again
+  if (task.kind === 'subagent' && task.status !== 'running' && call.status === 'running' && call.id.startsWith('subagent:')) {
+    // How it ended last time no longer holds; an update patch cannot unset fields, so clear them here
+    delete call.completedAt;
+    delete call.backgroundState;
+    delete call.backgroundSummary;
+    delete call.backgroundEndedAt;
+    task.status = 'running';
+    task.endedAt = undefined;
+    task.summary = undefined;
+    return;
+  }
   if (task.status !== 'running') return;
   const status = callStatus(task, call);
   if (status !== 'running') {

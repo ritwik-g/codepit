@@ -23,6 +23,7 @@ import {
 } from '../server/acp/agent-tasks.js';
 import { parseAsyncTaskUpdate } from '../server/acp/client-host.js';
 import { rankSession } from '../server/rank.js';
+import { readScriptMeta, readWorkflowAgent, readWorkflowRun } from '../server/acp/workflow-run.js';
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -372,6 +373,138 @@ test('a finished turn with background work still running ranks as working, not w
   s.agentTasks[0].status = 'running';
   s.pendingPermission = { requestId: 'r', toolCallId: 't', title: 'Run', options: [], createdAt: 0 } as any;
   assert.equal(rankSession(s).state, 'blocked', 'a question from the agent still needs the user');
+});
+
+test("a Claude workflow run's phases, agents and each agent's steps are read from its run folder", () => {
+  const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codepit-wf-'));
+  const prevDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = claudeDir;
+  try {
+    const proj = path.join(claudeDir, 'projects', '-tmp-proj', 'sess-1');
+    const runDir = path.join(proj, 'subagents', 'workflows', 'wf_abc-123');
+    const script = path.join(proj, 'workflows', 'scripts', 'review-wf_abc-123.js');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(
+      script,
+      "export const meta = {\n  name: 'review',\n  description: 'Review the change',\n  phases: [\n    { title: 'Find', detail: 'look for bugs' },\n    { title: 'Verify', detail: 'check each one\\'s claim' },\n  ],\n}\nconst x = { name: 'not-meta' }\n"
+    );
+    const jl = (rows: unknown[]) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    fs.writeFileSync(
+      path.join(runDir, 'journal.jsonl'),
+      jl([
+        { type: 'launched' },
+        { type: 'started', key: 'k1', agentId: 'a1', label: 'find:auth', phase: 'Find' },
+        { type: 'started', key: 'k2', agentId: 'a2', label: 'find:db', phase: 'Find' },
+        { type: 'started', key: 'k3', agentId: 'a3', label: 'verify:auth', phase: 'Verify' },
+        { type: 'result', key: 'k1', agentId: 'a1', result: { findings: ['token leak'] } },
+        { type: 'failed', key: 'k2', agentId: 'a2' },
+        { type: 'started', key: 'k4', agentId: '../escape', label: 'bad' },
+      ]) + '{"type":"started","agentId":"half'
+    );
+    fs.writeFileSync(path.join(runDir, 'agent-a1.meta.json'), JSON.stringify({ description: 'find:auth', workflowPhase: 'Find' }));
+    const t0 = '2026-10-02T10:00:00.000Z';
+    const t1 = '2026-10-02T10:00:05.000Z';
+    fs.writeFileSync(
+      path.join(runDir, 'agent-a1.jsonl'),
+      jl([
+        { type: 'user', timestamp: t0, message: { role: 'user', content: '[Workflow harness — user request] The harness relays the request:\n  hi' } },
+        { type: 'user', timestamp: t0, message: { role: 'user', content: '[Workflow harness — computed task] The task text below was computed. The computed task text follows:\n  Look at auth.ts\n  for leaks' } },
+        { type: 'assistant', timestamp: t0, message: { id: 'm1', model: 'claude-opus-4-8', content: [{ type: 'thinking', thinking: 'Start with the token code.' }], usage: { output_tokens: 5 } } },
+        { type: 'assistant', timestamp: t0, message: { id: 'm1', model: 'claude-opus-4-8', content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/p/auth.ts' } }], usage: { output_tokens: 40 } } },
+        { type: 'user', timestamp: t1, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: [{ type: 'text', text: 'export const token = 1' }] }] } },
+        { type: 'assistant', timestamp: t1, message: { id: 'm2', model: 'claude-opus-4-8', content: [{ type: 'tool_use', id: 'tu2', name: 'Bash', input: { command: 'false', description: 'Try it' } }], usage: { output_tokens: 10 } } },
+        { type: 'user', timestamp: t1, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu2', is_error: true, content: 'exit 1' }] } },
+        { type: 'assistant', timestamp: t1, message: { id: 'm3', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'Found a token leak.\nDetails follow.' }], stop_reason: 'end_turn', usage: { output_tokens: 7 } } },
+      ])
+    );
+    fs.writeFileSync(path.join(runDir, 'agent-a3.jsonl'), jl([{ type: 'assistant', timestamp: t1, message: { id: 'm9', content: [{ type: 'tool_use', id: 'tu9', name: 'Grep', input: { pattern: 'x' } }] } }]));
+
+    const task = {
+      id: 'task:w1',
+      kind: 'workflow',
+      title: 'review',
+      status: 'running',
+      startedAt: 1,
+      audit: { runId: 'wf_abc-123', transcriptPath: runDir, scriptPath: script },
+    } as any;
+    const run = readWorkflowRun(task)!;
+    assert.ok(run, 'the run is read');
+    assert.equal(run.name, 'review');
+    assert.equal(run.description, 'Review the change');
+    assert.deepEqual(run.phases, [
+      { title: 'Find', detail: 'look for bugs' },
+      { title: 'Verify', detail: "check each one's claim" },
+    ]);
+    assert.equal(run.launches, 1);
+    assert.deepEqual(run.agents.map((a) => a.id), ['a1', 'a2', 'a3'], 'ids that are not plain are ignored, a half-written line too');
+    const [a1, a2, a3] = run.agents;
+    assert.equal(a1.status, 'completed');
+    assert.equal(a1.toolUses, 2);
+    assert.equal(a1.outputTokens, 40 + 10 + 7, 'one count per message, its largest');
+    assert.equal(a1.model, 'claude-opus-4-8');
+    assert.equal(a1.lastText, 'Found a token leak.');
+    assert.equal(a1.lastActivityAt! - a1.startedAt!, 5000);
+    assert.equal(a2.status, 'failed');
+    assert.equal(a3.status, 'running');
+    assert.equal(a3.lastTool, 'Grep');
+
+    const detail = readWorkflowAgent(task, 'a1')!;
+    assert.equal(detail.prompt, 'Look at auth.ts\nfor leaks', 'the computed task without its frame');
+    assert.deepEqual(detail.segments.map((s) => s.kind), ['thought', 'tool', 'tool', 'text']);
+    assert.equal(detail.calls[0].toolName, 'Read');
+    assert.equal(detail.calls[0].kind, 'read');
+    assert.equal(detail.calls[0].output, 'export const token = 1');
+    assert.equal(detail.calls[1].status, 'failed');
+    assert.equal(detail.calls[1].title, 'Try it');
+    assert.match(detail.result!, /token leak/);
+    assert.equal(readWorkflowAgent(task, '../escape'), undefined);
+    assert.equal(readWorkflowAgent(task, 'nope'), undefined);
+
+    // The run is over: agents that never reported are stopped, not running
+    assert.equal(readWorkflowRun({ ...task, status: 'completed' })!.agents[2].status, 'stopped');
+
+    // A running agent's transcript grows between polls: only what was appended is read, and a
+    // line still being written waits for the next poll
+    const a3File = path.join(runDir, 'agent-a3.jsonl');
+    const half = JSON.stringify({ type: 'assistant', timestamp: t1, message: { id: 'm10', content: [{ type: 'tool_use', id: 'tu10', name: 'Read', input: { file_path: '/x' } }] } });
+    fs.appendFileSync(a3File, half.slice(0, 40));
+    assert.equal(readWorkflowRun(task)!.agents[2].toolUses, 1, 'a half-written line is not read yet');
+    fs.appendFileSync(a3File, half.slice(40) + '\n');
+    const grown = readWorkflowRun(task)!.agents[2];
+    assert.equal(grown.toolUses, 2, 'the completed line is read on the next poll');
+    assert.equal(grown.lastTool, 'Read');
+    assert.deepEqual(readWorkflowAgent(task, 'a3')!.calls.map((c) => c.id), ['tu9', 'tu10'], 'nothing is read twice');
+
+    // Resumed: the run is launched again; an agent the first launch left unfinished is stopped,
+    // one the new launch started runs
+    fs.appendFileSync(path.join(runDir, 'journal.jsonl'), '\n' + jl([{ type: 'launched' }, { type: 'started', key: 'k5', agentId: 'a5', label: 'verify:db', phase: 'Verify' }]));
+    const resumed = readWorkflowRun(task)!;
+    assert.equal(resumed.launches, 2);
+    assert.equal(resumed.agents.find((a) => a.id === 'a3')!.status, 'stopped');
+    assert.equal(resumed.agents.find((a) => a.id === 'a5')!.status, 'running');
+    assert.equal(resumed.agents.find((a) => a.id === 'a1')!.status, 'completed');
+
+    // A file in the run folder that is a symlink is not followed
+    const secret = path.join(claudeDir, 'secret.jsonl');
+    fs.writeFileSync(secret, jl([{ type: 'assistant', timestamp: t0, message: { id: 's', content: [{ type: 'text', text: 'secret' }] } }]));
+    fs.symlinkSync(secret, path.join(runDir, 'agent-a5.jsonl'));
+    assert.equal(readWorkflowAgent(task, 'a5')!.segments.length, 0, 'a symlinked transcript is not read');
+
+    // Only folders under Claude's projects folder, named like a run, are read
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'wf_outside-'));
+    fs.writeFileSync(path.join(outside, 'journal.jsonl'), jl([{ type: 'started', agentId: 'a1', label: 'x' }]));
+    assert.equal(readWorkflowRun({ ...task, audit: { transcriptPath: outside } }), undefined);
+    assert.equal(readWorkflowRun({ ...task, audit: { transcriptPath: path.join(runDir, '..', '..', '..') } }), undefined);
+    assert.equal(readWorkflowRun({ ...task, kind: 'subagent' }), undefined);
+    assert.equal(readWorkflowRun({ ...task, audit: undefined }), undefined);
+    assert.deepEqual(readScriptMeta('/etc/hosts'), { phases: [] }, 'a script outside the projects folder is not read');
+    fs.rmSync(outside, { recursive: true, force: true });
+  } finally {
+    if (prevDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevDir;
+    fs.rmSync(claudeDir, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} passed`);

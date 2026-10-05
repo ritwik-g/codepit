@@ -104,6 +104,30 @@ class MockAcpAgent {
       return { stopReason: 'end_turn' as const };
     }
 
+    // "rfd subagent" delegates the way ACP's subagents RFD says: a subagent_update upsert naming the
+    // child session, its work on that session, then an idle state with usage. The child keeps its id
+    // across prompts, so asking again delegates to the same subagent.
+    if (/\brfd subagent\b/.test(lower)) {
+      const root = params.sessionId;
+      const send = (update: Record<string, unknown>, sessionId = root) => cx.notify(acp.methods.client.session.update, { sessionId, update });
+      const say = (text: string, sessionId = root) => send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, sessionId);
+      // The SDK's schema (1.5) drops the RFD's `subagents` capability on parse, so the AIR flag stands in
+      if ((this.clientCapabilities as any)?.subagents == null && !this.subagentSessions) {
+        await say('This client does not take subagents.');
+        return { stopReason: 'end_turn' as const };
+      }
+      const child = `rfd-reviewer-${root}`;
+      await send({ sessionUpdate: 'subagent_update', sessionId: child, title: 'Reviewer', description: 'Reviews the diff', capabilities: { cancel: {} } });
+      await send({ sessionUpdate: 'subagent_update', sessionId: child, state: { state: 'running' } });
+      const callId = `call-rfd-${crypto.randomUUID().slice(0, 8)}`;
+      await send({ sessionUpdate: 'tool_call', toolCallId: callId, title: 'git diff', kind: 'execute', status: 'in_progress', rawInput: { command: 'git diff' } }, child);
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: callId, status: 'completed', rawOutput: { output: '1 file changed' } }, child);
+      await say('The diff looks fine.', child);
+      await send({ sessionUpdate: 'subagent_update', sessionId: child, state: { state: 'idle', stopReason: /\bcancel\b/.test(lower) ? 'cancelled' : 'end_turn', usage: { totalTokens: 1234, inputTokens: 1000, outputTokens: 234 } } });
+      await say('The reviewer is done.');
+      return { stopReason: 'end_turn' as const };
+    }
+
     // "subagent" hands work to a subagent the way Codex's adapter reports it to a client that takes
     // subagent sessions: subagent_spawned, then the subagent's own session, then subagent_state_update.
     // "subagent permission" also has the subagent ask for approval.

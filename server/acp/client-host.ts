@@ -166,7 +166,7 @@ export class AcpClientHost extends EventEmitter {
    * Subagents that report through their own ACP session (Codex, AIR nativeSubagentSessions),
    * keyed by that session id: the tool call that stands for each one, and its name.
    */
-  private subagentSessions = new Map<string, { callId: string; name: string }>();
+  private subagentSessions = new Map<string, { callId: string; name: string; ended?: boolean }>();
 
   constructor(
     public readonly sessionRecordId: string,
@@ -210,52 +210,88 @@ export class AcpClientHost extends EventEmitter {
   }
 
   /**
-   * A subagent that works in a session of its own (AIR `subagent_spawned` / `subagent_state_update`,
-   * sent on its parent's session). It is shown as a subagent call, the way Claude's Agent call is,
-   * and the updates of its own session are filed under that call.
+   * A subagent that works in a session of its own, announced on its parent's session. Two
+   * wire forms: the AIR draft Codex sends (`subagent_spawned` / `subagent_state_update`, child
+   * in `subagentSessionId`) and ACP's subagents RFD (`subagent_update`, an upsert with the
+   * child in `sessionId` and a `{state}` snapshot). Either way it is shown as a subagent
+   * call, the way Claude's Agent call is, and the updates of its own session are filed under it.
    */
   private handleSubagentUpdate(update: any, parentSessionId: string | undefined): void {
+    if (update.sessionUpdate === 'subagent_update') {
+      const childId = typeof update.sessionId === 'string' ? update.sessionId : undefined;
+      if (!childId) return;
+      const title = typeof update.title === 'string' ? update.title : undefined;
+      this.spawnSubagent(childId, parentSessionId, title, typeof update.description === 'string' ? update.description : undefined);
+      const snap = update.state;
+      if (!snap || typeof snap !== 'object') return;
+      const child = this.subagentSessions.get(childId)!;
+      if (snap.state === 'running' || snap.state === 'requires_action') {
+        // Delegated again after it went idle: the same call picks up the new work
+        if (child.ended) {
+          child.ended = false;
+          // Its earlier end time and state are cleared where the task reopens (agent-tasks)
+          this.emit('toolCallUpdate', { id: child.callId, status: 'running' } as ToolCallRecord);
+        }
+      } else if (snap.state === 'idle') {
+        const reason = snap.stopReason;
+        this.endSubagent(child, reason === 'cancelled' ? 'cancelled' : reason === 'error' || reason === 'refusal' ? 'failed' : 'completed', snap.usage);
+      }
+      return;
+    }
     const childId = typeof update.subagentSessionId === 'string' ? update.subagentSessionId : undefined;
     if (!childId) return;
     if (update.sessionUpdate === 'subagent_spawned') {
       if (this.subagentSessions.has(childId)) return;
-      const name = (typeof update.name === 'string' && update.name.trim()) || 'Subagent';
       // Codex fills in "Delegated task for <name>" when it never saw the prompt; that says nothing
       const task =
         typeof update.task === 'string' && update.task.trim() && !/^Delegated task( for .*)?$/.test(update.task.trim()) ? update.task : undefined;
-      const callId = `subagent:${childId}`;
-      this.subagentSessions.set(childId, { callId, name });
-      // A subagent a subagent started goes under that one
-      const parent = parentSessionId ? this.subagentSessions.get(parentSessionId)?.callId : undefined;
-      this.emit('toolCall', {
-        id: callId,
-        title: name,
-        kind: 'other',
-        toolName: 'Subagent',
-        description: name,
-        isSubagent: true,
-        input: { description: name, ...(task ? { prompt: task } : {}) },
-        // Codex continues a finished subagent as `<thread>:generation:<n>`; the thread is its id
-        agentRef: { subagentId: childId.replace(/:generation:\d+$/, '') },
-        ...(parent ? { parentToolUseId: parent } : {}),
-        status: 'running',
-        startedAt: Date.now(),
-      } satisfies ToolCallRecord);
+      this.spawnSubagent(childId, parentSessionId, typeof update.name === 'string' ? update.name : undefined, task);
       return;
     }
     if (update.sessionUpdate === 'subagent_state_update') {
       const child = this.subagentSessions.get(childId);
       const state = update.state;
       if (!child || (state !== 'completed' && state !== 'failed' && state !== 'cancelled')) return;
-      const stopped = state === 'cancelled';
-      // Only the fields that change: the update is merged into the call
-      this.emit('toolCallUpdate', {
-        id: child.callId,
-        status: state === 'failed' ? 'failed' : 'completed',
-        ...(stopped ? { backgroundState: 'stopped', backgroundSummary: 'Stopped' } : {}),
-        completedAt: Date.now(),
-      } as ToolCallRecord);
+      this.endSubagent(child, state);
     }
+  }
+
+  /** The call that stands for a subagent session, emitted the first time the session is named. */
+  private spawnSubagent(childId: string, parentSessionId: string | undefined, name: string | undefined, task: string | undefined): void {
+    if (this.subagentSessions.has(childId)) return;
+    const title = name?.trim() || 'Subagent';
+    const callId = `subagent:${childId}`;
+    this.subagentSessions.set(childId, { callId, name: title });
+    // A subagent a subagent started goes under that one
+    const parent = parentSessionId ? this.subagentSessions.get(parentSessionId)?.callId : undefined;
+    this.emit('toolCall', {
+      id: callId,
+      title,
+      kind: 'other',
+      toolName: 'Subagent',
+      description: title,
+      isSubagent: true,
+      input: { description: title, ...(task ? { prompt: task } : {}) },
+      // Codex continues a finished subagent as `<thread>:generation:<n>`; the thread is its id
+      agentRef: { subagentId: childId.replace(/:generation:\d+$/, '') },
+      ...(parent ? { parentToolUseId: parent } : {}),
+      status: 'running',
+      startedAt: Date.now(),
+    } satisfies ToolCallRecord);
+  }
+
+  private endSubagent(child: { callId: string; ended?: boolean }, state: 'completed' | 'failed' | 'cancelled', usage?: any): void {
+    child.ended = true;
+    const stopped = state === 'cancelled';
+    const total = Number(usage?.totalTokens);
+    // Only the fields that change: the update is merged into the call
+    this.emit('toolCallUpdate', {
+      id: child.callId,
+      status: state === 'failed' ? 'failed' : 'completed',
+      ...(stopped ? { backgroundState: 'stopped', backgroundSummary: 'Stopped' } : {}),
+      ...(Number.isFinite(total) && total > 0 ? { agentUsage: { totalTokens: total } } : {}),
+      completedAt: Date.now(),
+    } as ToolCallRecord);
   }
 
   async start(): Promise<void> {
@@ -613,6 +649,9 @@ export class AcpClientHost extends EventEmitter {
         // Compaction runs (the agent's own /compact, or its automatic one) are
         // reported as compaction_update lifecycles with a retained summary.
         session: { compaction: {} },
+        // ACP subagents RFD (unstable): child sessions announced by subagent_update. Only for
+        // agents whose subagents CodePit already takes as sessions of their own
+        ...(this.agent.nativeSubagentSessions ? { subagents: {} } : {}),
         _meta: {
           // Agents that run shell commands themselves (Claude Code, Codex) only
           // report command output and exit codes when the client asks for it.
