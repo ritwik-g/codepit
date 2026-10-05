@@ -24,6 +24,7 @@ const { LanAccess } = await import('../server/lan.js');
 const { getSettingsFile } = await import('../server/paths.js');
 const { localhostAllowed } = await import('../server/security.js');
 const { devices, DEVICE_IDLE_MS, MAX_PENDING, MAX_PENDING_PER_IP } = await import('../server/devices.js');
+const { isPairingRequestPath } = await import('../server/pairing-routes.js');
 const { WebSocket } = await import('ws');
 
 interface Reply {
@@ -307,6 +308,43 @@ async function runTests() {
     expect(settings.lanEnabled === true, 'Setting should be saved');
     expect((fs.statSync(getSettingsFile()).mode & 0o777) === 0o600, 'Settings file must be private (0600)');
     console.log(`   ✅ Listening on ${on.body.ips.join(', ') || '(no interfaces on this machine)'}, setting saved with mode 0600\n`);
+
+    // 4b. Express matches the /api mount in any case, so the gate must too
+    console.log('4️⃣b Gating the API whatever the case of its path...');
+    for (const p of ['/pair/request', '/pair/request/abc-1', '/Pair/Request/', '/PAIR/REQUEST/abc-1/']) {
+      expect(isPairingRequestPath(p), `${p} is a pairing request path`);
+    }
+    for (const p of ['/api/pair/request', '/pair/requests', '/pair/request/a/b', '/pair/approve', '/sessions', '/']) {
+      expect(!isPairingRequestPath(p), `${p} is not a pairing request path`);
+    }
+    const mixedCase = [
+      ['GET', '/API/sessions', undefined],
+      ['GET', `/Api/folders?path=${encodeURIComponent(os.homedir())}`, undefined],
+      ['POST', '/API/sessions', { cwd: os.homedir() }],
+      ['GET', '/API/mcp/servers', undefined],
+      ['GET', '/api/SESSIONS', undefined],
+    ] as const;
+    for (const [method, url, body] of mixedCase) {
+      const r = await call(port, method, url, { ...lan, body });
+      expect(r.status === 401 && r.body.reason === undefined && /not paired/.test(r.body.error), `${method} ${url} from an unpaired LAN client should be 401 not paired: ${r.status} ${JSON.stringify(r.body)}`);
+    }
+    process.env.CODEPIT_LOCALHOST = '0';
+    try {
+      for (const [method, url, body] of mixedCase) {
+        const r = await call(port, method, url, { body });
+        expect(r.status === 401 && r.body.reason === 'use-app', `${method} ${url} from a browser on this machine should be 401 use-app: ${r.status} ${JSON.stringify(r.body)}`);
+      }
+    } finally {
+      delete process.env.CODEPIT_LOCALHOST;
+    }
+    const mixedPair = await call(port, 'POST', '/API/Pair/Request', { ...lan, body: {} });
+    expect(mixedPair.status === 200 && mixedPair.body.requestId && mixedPair.body.pollSecret, `/API/Pair/Request still pairs: ${mixedPair.status} ${JSON.stringify(mixedPair.body)}`);
+    const mixedPoll = await call(port, 'GET', `/Api/pair/REQUEST/${mixedPair.body.requestId}?secret=${encodeURIComponent(mixedPair.body.pollSecret)}`, lan);
+    expect(mixedPoll.status === 200 && mixedPoll.body.status === 'pending', `Mixed-case poll: ${mixedPoll.status} ${JSON.stringify(mixedPoll.body)}`);
+    const mixedCross = await call(port, 'POST', '/API/pair/request', { ...lan, headers: { ...lan.headers, origin: 'http://evil.example' }, body: {} });
+    expect(mixedCross.status === 403, `A cross-origin pairing request is refused in any case, got ${mixedCross.status}`);
+    devices.cancelPairing();
+    console.log('   ✅ Mixed-case API paths refused like lowercase ones; pairing still works in any case\n');
 
     // 5. Code path: the device shows a code, the host types it, the poll hands over the cookie
     console.log('5️⃣ Pairing by code...');

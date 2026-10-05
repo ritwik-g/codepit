@@ -13,9 +13,13 @@ import { getRemoteAddress, isHostClient, isLoopbackAddress, type AccessDecision 
  */
 export const pairingRouter = Router();
 
-/** Request paths the gate lets through without a device cookie. */
+/**
+ * Paths, relative to the /api mount, that the gate lets through without a device cookie.
+ * Matched the way this router matches '/pair/request' and '/pair/request/:id' (any case,
+ * optional trailing slash), so the gate and the routes agree on what is a pairing request.
+ */
 export function isPairingRequestPath(path: string): boolean {
-  return path === '/api/pair/request' || /^\/api\/pair\/request\/[\w-]+$/.test(path);
+  return /^\/pair\/request(?:\/[^/]+)?\/?$/i.test(path);
 }
 
 const param = (req: Request, name: string): string => String(req.params[name]);

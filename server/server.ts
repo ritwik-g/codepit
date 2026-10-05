@@ -65,11 +65,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   // cross-site HTML form reach the API as a "simple" request without a CORS preflight.
   app.use(express.json({ limit: '50mb' }));
 
-  app.use((req, res, next) => {
-    // Static assets, the page and the manifest are public; the API is not
-    if (!req.path.startsWith('/api')) {
-      return next();
-    }
+  // Static assets, the page and the manifest are public; the API is not. The gate sits
+  // on the /api mount so Express's own (case-insensitive) matching decides both whether a
+  // request reaches an API route and whether it is checked; req.path is relative here.
+  app.use('/api', (req, res, next) => {
     // An unpaired device must be able to ask to pair and hear back
     const decision = isPairingRequestPath(req.path) ? checkOrigin(req) : checkAccess(req);
     if (!decision.ok) {
