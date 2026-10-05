@@ -300,6 +300,20 @@ export interface AgentSessionRecord {
 export type ThinkingEffort = string;
 export type ContextTransferMode = 'compact' | 'full' | 'none';
 
+/** The agent was running when CodePit last closed (quit, crash or update); offered back, never restarted on its own. */
+export interface RestoreOffer {
+  /** When that agent process started. */
+  runningSince: number;
+  /** When this run of CodePit found it. */
+  foundAt: number;
+  /** A turn was in progress; it is not sent again. */
+  turnInterrupted: boolean;
+  /** Restoring continues the same agent session; false: a new one, handed a summary. */
+  continues: boolean;
+  /** Why the last restore failed; the offer stays so it can be retried or dismissed. */
+  error?: string;
+}
+
 export interface QueuedPrompt {
   id: string;
   text: string;
@@ -383,6 +397,7 @@ export interface AcpSession {
   /** The running agent can take a message into a turn in progress (ACP steering). */
   canSteer?: boolean;
   agentStopped?: boolean;
+  restore?: RestoreOffer;
   /** The agent's latest todo list. */
   plan?: PlanEntry[];
   /** App-level MCP servers handed to the agent when it last started. */
@@ -430,6 +445,9 @@ export interface SessionSummary {
   tokenCount: number;
   turnCount: number;
   isAgentRunning?: boolean;
+  restore?: RestoreOffer;
+  /** A restore is starting this session's agent now. */
+  restoring?: boolean;
   /** A compaction is running (started here or by the agent). */
   compacting?: boolean;
   /** The turn ended but subagents, workflows or background commands it started still run. */

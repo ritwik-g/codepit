@@ -23,6 +23,7 @@ import { AgentsPanel, agentTaskCounts } from './AgentsView';
 import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
 import { SnoozeModal, TagsPanel } from './SessionOrganize';
+import { RestoreSessionBanner, isRestorable } from './RestorePrompt';
 
 // Other areas import these from here.
 export { STATE_LABEL, formatTime, nextPriority } from './sessionMeta';
@@ -58,6 +59,10 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('conversation');
   const [showMobileActions, setShowMobileActions] = useState(false);
+  // The restore offer is read from the summaries: the stream's shallow merge never clears a removed key
+  const summary = allSessions.find((s) => s.id === session.id);
+  const restorable = Boolean(summary && isRestorable(summary));
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [showSnooze, setShowSnooze] = useState(false);
   const [promptText, setPromptText] = useState('');
   const [rollingBack, setRollingBack] = useState(false);
@@ -163,6 +168,20 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
       onRefresh();
     } catch (err: any) {
       alert(`Error starting agent: ${err.message}`);
+    }
+  };
+
+  const handleRestore = async () => {
+    if (restoreBusy) return;
+    setRestoreBusy(true);
+    try {
+      await api.restoreSession(session.id);
+      onRefresh();
+    } catch (err: any) {
+      alert(`Error restoring agent: ${err.message}`);
+      onRefresh();
+    } finally {
+      setRestoreBusy(false);
     }
   };
 
@@ -334,6 +353,9 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
         onOpenSwitchModal={onOpenSwitchModal}
         onStopAgent={handleStopAgent}
         onStartAgent={handleStartAgent}
+        restorable={restorable}
+        restoring={restoreBusy || Boolean(summary?.restoring)}
+        onRestore={handleRestore}
         onTogglePriority={handleTogglePriority}
         onTogglePin={handleTogglePin}
         menuItems={menuItems}
@@ -424,15 +446,16 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
               onResolve={handleResolvePermission}
               onApproveAndAutoApprove={handleApproveAndAutoApprove}
             />
+          ) : session.pendingElicitation ? (
+            <ElicitationCard
+              key={session.pendingElicitation.requestId}
+              sessionId={session.id}
+              elicitation={session.pendingElicitation}
+              onAnswered={onRefresh}
+            />
           ) : (
-            session.pendingElicitation && (
-              <ElicitationCard
-                key={session.pendingElicitation.requestId}
-                sessionId={session.id}
-                elicitation={session.pendingElicitation}
-                onAnswered={onRefresh}
-              />
-            )
+            restorable &&
+            summary && <RestoreSessionBanner key={session.id} summary={summary} queuedCount={session.queuedPrompts?.length ?? 0} />
           )
         }
       />

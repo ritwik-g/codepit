@@ -132,6 +132,23 @@ export const api = {
     request<{ session: AcpSession }>(`/api/sessions/${id}/start`, {
       method: 'POST',
     }),
+  // The agent that was running when CodePit last closed: start it again, or stop offering it
+  restoreSession: (id: string) =>
+    request<{ session: AcpSession }>(`/api/sessions/${id}/restore`, {
+      method: 'POST',
+    }),
+  dismissRestore: (id: string) =>
+    request<{ ok: boolean }>(`/api/sessions/${id}/restore`, {
+      method: 'DELETE',
+    }),
+  restoreAllSessions: () =>
+    request<{ restored: string[]; failed: Array<{ id: string; title: string; error: string }> }>('/api/sessions/restore-all', {
+      method: 'POST',
+    }),
+  dismissAllRestores: () =>
+    request<{ dismissed: number }>('/api/sessions/restore-all', {
+      method: 'DELETE',
+    }),
   resolvePermission: (id: string, optionId: string) =>
     request<{ ok: boolean }>(`/api/sessions/${id}/permission`, {
       method: 'POST',

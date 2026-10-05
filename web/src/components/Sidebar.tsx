@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { SessionSummary } from '../types';
 import { VendorIcon } from './VendorLogos';
-import { Badge, Button, Icon, IconButton, Input, Kbd, StatusDot, type Tone } from '../ui';
+import { Badge, Button, Icon, IconButton, Input, Kbd, Spinner, StatusDot, type Tone } from '../ui';
 import { ThemeMenu } from './ThemeMenu';
 import { BrandMark } from './BrandMark';
 import { formatTokens, sessionPricing } from '../pricing';
+import { api } from '../api';
+import { RestoreAllBar, isRestorable } from './RestorePrompt';
 
 // ------------------------------------------------------------------ helpers
 // Shared by the sidebar, the command palette and the home dashboard.
@@ -22,9 +24,11 @@ export interface SessionStatus {
 /** Label and tone for a session's state, per the table in DESIGN.md. */
 export function sessionStatus(
   s: Pick<SessionSummary, 'state' | 'isAgentRunning' | 'compacting' | 'workingInBackground'> &
-    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation'>>
+    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore'>>
 ): SessionStatus {
   if (s.compacting && s.state !== 'blocked') return { label: 'Compacting', tone: 'accent', pulse: true };
+  // Its agent was running when CodePit closed: offered back with Restore
+  if (s.restore && s.isAgentRunning === false && s.state !== 'blocked') return { label: 'Was running', tone: 'warn', pulse: false };
   if (s.isAgentRunning === false && s.state !== 'crashed' && s.state !== 'blocked') {
     return { label: 'Agent stopped', tone: 'neutral', pulse: false };
   }
@@ -397,6 +401,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       )}
 
+      {/* Every session, not the filtered ones: the count does not depend on the tab or the filter */}
+      <RestoreAllBar sessions={sessions} />
+
       <div className="sb-list">
         {groups.map((g) => {
           // A text filter shows every match, folded or not
@@ -523,6 +530,7 @@ const SessionRow: React.FC<{
           </span>
         )}
         <PriorityBadge priority={session.user.priority} />
+        {isRestorable(session) && <RowRestoreButton session={session} />}
         <span className="sb-row-time" title={new Date(session.updatedAt).toLocaleString()}>
           {relativeTime(session.updatedAt)}
         </span>
@@ -548,5 +556,40 @@ const SessionRow: React.FC<{
         )
       )}
     </div>
+  );
+};
+
+/** Restore the row's agent without opening the session; the row's own click and keys are not triggered. */
+const RowRestoreButton: React.FC<{ session: SessionSummary }> = ({ session }) => {
+  const [busy, setBusy] = useState(false);
+  if (busy || session.restoring) {
+    return (
+      <span className="sb-row-restore is-busy" title="Restoring the agent" role="status" aria-label="Restoring the agent">
+        <Spinner size={12} />
+      </span>
+    );
+  }
+  return (
+    <IconButton
+      icon="play"
+      size="sm"
+      tone="warn"
+      className="sb-row-restore"
+      label="Restore agent"
+      title={session.restore?.error ? `Restore agent (last try failed: ${session.restore.error})` : 'Restore agent: start the agent that was running when CodePit closed'}
+      onClick={async (e) => {
+        e.stopPropagation();
+        setBusy(true);
+        try {
+          await api.restoreSession(session.id);
+        } catch (err: any) {
+          // Said out loud: a row's title is hover-only, and phones never show it
+          alert(`Could not restore "${session.title}": ${err?.message || err}`);
+        } finally {
+          setBusy(false);
+        }
+      }}
+      onKeyDown={(e) => e.stopPropagation()}
+    />
   );
 };

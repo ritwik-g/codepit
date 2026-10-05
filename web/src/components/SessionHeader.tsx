@@ -157,6 +157,11 @@ export const SessionHeader: React.FC<{
   onOpenSwitchModal: () => void;
   onStopAgent: () => void;
   onStartAgent: () => void;
+  /** The agent was running when CodePit closed: offer Restore in place of Resume. */
+  restorable?: boolean;
+  /** A restore of this session is starting its agent (from here, the banner, the row or Restore all). */
+  restoring?: boolean;
+  onRestore?: () => void;
   onTogglePriority: () => void;
   onTogglePin: () => void;
   menuItems: Array<MenuItem | 'divider'>;
@@ -171,6 +176,9 @@ export const SessionHeader: React.FC<{
   onOpenSwitchModal,
   onStopAgent,
   onStartAgent,
+  restorable,
+  restoring,
+  onRestore,
   onTogglePriority,
   onTogglePin,
   menuItems,
@@ -248,6 +256,17 @@ export const SessionHeader: React.FC<{
             title="Stop the agent process to free memory. History is kept; it restarts on your next message."
           >
             Stop agent
+          </Button>
+        ) : restorable ? (
+          <Button
+            variant="ghost"
+            icon="play"
+            loading={restoring}
+            disabled={restoring}
+            onClick={onRestore}
+            title="Start the agent that was running when CodePit closed; nothing is sent again"
+          >
+            Restore agent
           </Button>
         ) : (
           <Button variant="ghost" icon="play" onClick={onStartAgent} title="Start the agent process again">

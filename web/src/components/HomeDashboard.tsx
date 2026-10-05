@@ -2,6 +2,7 @@ import React from 'react';
 import type { AgentDescriptor, SessionSummary } from '../types';
 import { Badge, Button, EmptyState, Icon, Kbd, StatusDot } from '../ui';
 import { VendorIcon } from './VendorLogos';
+import { isRestorable } from './RestorePrompt';
 import { MOD_KEY, PriorityBadge, SessionMeta, isWorking, needsAttention, relativeTime, sessionPreview, sessionStatus } from './Sidebar';
 
 interface HomeDashboardProps {
@@ -41,14 +42,17 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({ sessions, agents, 
   const working = live.filter(isWorking);
   const recent = [...live].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
   const firstRun = sessions.length === 0;
+  // Restored from the sidebar's strip; the summary only says how many
+  const restorable = live.filter(isRestorable).length;
+  const restoreNote = restorable > 0 ? ` ${plural(restorable, 'agent was', 'agents were')} running when CodePit closed.` : '';
 
-  const summary = firstRun
+  const summary = (firstRun
     ? 'Run Claude Code, Codex, Gemini and other ACP agents side by side, and step in only when one needs you.'
     : attention.length > 0
     ? `${plural(attention.length, 'session needs', 'sessions need')} you${working.length ? `, ${working.length} working` : ''}.`
     : working.length > 0
     ? `${plural(working.length, 'session is', 'sessions are')} working. Nothing needs you right now.`
-    : 'All quiet. Nothing needs you right now.';
+    : 'All quiet. Nothing needs you right now.') + (firstRun ? '' : restoreNote);
 
   return (
     <main className="home main-home" aria-label="Home">
@@ -105,7 +109,9 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({ sessions, agents, 
                   hasPendingPermission: s.hasPendingPermission,
                   hasPendingElicitation: s.hasPendingElicitation,
                 });
-                const stopped = sessionStatus(s).label === 'Agent stopped';
+                // "Was running" is a stopped agent too, offered back with Restore
+                const stoppedLabel = sessionStatus(s).label;
+                const stopped = stoppedLabel === 'Agent stopped' || stoppedLabel === 'Was running';
                 const preview = sessionPreview(s);
                 return (
                   <button key={s.id} type="button" className={`home-attn tone-${status.tone}`} onClick={() => onSelectSession(s.id)}>
@@ -113,7 +119,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({ sessions, agents, 
                       <StatusDot tone={status.tone} pulse={status.pulse} />
                       <span className="home-attn-title">{s.title}</span>
                       <PriorityBadge priority={s.user.priority} />
-                      {stopped && <Badge tone="neutral">Agent stopped</Badge>}
+                      {stopped && <Badge tone={stoppedLabel === 'Was running' ? 'warn' : 'neutral'}>{stoppedLabel}</Badge>}
                       <Badge tone={status.tone}>{status.label}</Badge>
                     </span>
                     {preview.text && (

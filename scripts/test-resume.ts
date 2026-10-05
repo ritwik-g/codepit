@@ -111,10 +111,12 @@ async function main(): Promise<void> {
   void cutOff;
   check('back as your turn, not working', sessionManager.getSession(id)!.state === 'needs_you', sessionManager.getSession(id)!.state);
   check('a note says the turn was cut off and the next message continues', /CodePit stopped while this turn was running.*continues the same agent session/.test(notes(id).at(-1) || ''), notes(id).at(-1));
+  check('the agent is offered back, with the turn marked as cut off', sessionManager.listSessions().find((x) => x.id === id)?.restore?.turnInterrupted === true, sessionManager.listSessions().find((x) => x.id === id)?.restore);
   sessionManager.init();
   check('a second start adds no second note', notes(id).filter((n) => n.startsWith('CodePit stopped while')).length === 1);
   const carried = await ask(id, 'carry on');
   check('the next message continues the same agent session', field(carried, 'resumed') === 'true' && field(carried, 'history') === 'false', carried);
+  check('a message takes the session back: no restore offer left', !sessionManager.getSession(id)!.restore);
 
   console.log('4. When the agent cannot continue it, a new session gets a summary');
   await sessionManager.stopSessionAgent(id);

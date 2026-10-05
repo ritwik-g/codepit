@@ -445,6 +445,8 @@ export interface AcpSession {
   /** The running agent can take a message into a turn in progress (ACP steering). */
   canSteer?: boolean;
   agentStopped?: boolean; // Set by an explicit Stop; ranks the session 'parked' until restarted
+  agentLive?: AgentLiveMark;
+  restore?: RestoreOffer;
   /** The agent's latest todo list (ACP `plan` update). */
   plan?: PlanEntry[];
   /** App-level MCP servers handed to the agent when it last started. */
@@ -463,6 +465,30 @@ export interface AcpSession {
   lastTurnEndedAt?: number;
   /** When the user last had this session open; a turn that ended after it is unseen. */
   seenAt?: number;
+}
+
+/** An agent process this run of CodePit started and has not stopped: on disk while it runs, so a crash leaves it behind. */
+export interface AgentLiveMark {
+  since: number;
+  /** The CodePit process that owns it; another live CodePit on the same data dir keeps its own. */
+  pid: number;
+  /** When that process started and when the machine booted (ms): a reused pid is not that process. */
+  started?: number;
+  boot?: number;
+}
+
+/** The agent was running when CodePit last closed (quit, crash or update); offered back, never restarted on its own. */
+export interface RestoreOffer {
+  /** When that agent process started. */
+  runningSince: number;
+  /** When this run of CodePit found it. */
+  foundAt: number;
+  /** A turn was in progress; it is not sent again. */
+  turnInterrupted: boolean;
+  /** Restoring continues the same agent session; false: a new one, handed a summary. */
+  continues: boolean;
+  /** Why the last restore failed; the offer stays so it can be retried or dismissed. */
+  error?: string;
 }
 
 export interface QueuedPrompt {
@@ -500,6 +526,9 @@ export interface SessionSummary {
   tokenCount: number;
   turnCount: number;
   isAgentRunning?: boolean;
+  restore?: RestoreOffer;
+  /** A restore is starting this session's agent now. */
+  restoring?: boolean;
   /** A compaction is running (started here or by the agent). */
   compacting?: boolean;
   /** The turn ended but subagents, workflows or background commands it started still run. */

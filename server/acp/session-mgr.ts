@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { store } from '../store.js';
 import { getGitInfo } from '../git.js';
@@ -17,7 +18,7 @@ import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, remem
 import { logQueueEvent } from '../queue-log.js';
 import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopTranscriptWatchers, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
-import type { AcpSession, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
+import type { AcpSession, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
 /**
  * Format conversation history into a structured briefing block for context transfer.
@@ -180,6 +181,13 @@ export class ElicitationAnswerError extends Error {
   }
 }
 
+/** A restore that cannot run; `status` is the HTTP status that says why. */
+export class RestoreError extends Error {
+  constructor(message: string, public readonly status: 404 | 409) {
+    super(message);
+  }
+}
+
 export class AgentNotRunningError extends Error {
   constructor() {
     super('The agent is stopped. Start it first, or compact anyway to resend recent turns for the summary');
@@ -205,6 +213,8 @@ export class SessionManager extends EventEmitter {
   private autoCompactAfterBackground = new Map<string, string | undefined>();
   /** Whether the sidebar was last told a session is working in the background. */
   private inBackground = new Map<string, boolean>();
+  /** Sessions a restore is starting the agent of now, and that restore. */
+  private restoring = new Map<string, Promise<AcpSession>>();
   private unsubscribeRateLimits?: () => void;
 
   constructor() {
@@ -222,7 +232,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Shut down the session's agent (running or still starting) and drop turn ownership. */
-  private dropHost(sessionId: string, reason = 'Stopped'): void {
+  private dropHost(sessionId: string, reason = 'Stopped', opts: { appQuit?: boolean } = {}): void {
     const running = this.activeHosts.get(sessionId);
     if (running?.sessionId) this.endAgentSession(sessionId, running.sessionId, reason);
     const run = this.compactionRuns.get(sessionId);
@@ -240,6 +250,16 @@ export class SessionManager extends EventEmitter {
       this.startingHosts.delete(sessionId);
     }
     this.activePrompts.delete(sessionId);
+    // Quitting keeps the mark: those agents are offered back on the next start
+    if (!opts.appQuit) this.clearLiveMark(sessionId);
+  }
+
+  /** The session's agent is no longer running: a later start of CodePit has nothing to offer back. */
+  private clearLiveMark(sessionId: string): void {
+    const s = store.get(sessionId);
+    if (!s?.agentLive) return;
+    delete s.agentLive;
+    store.save(s, { touch: false });
   }
 
   /**
@@ -332,19 +352,39 @@ export class SessionManager extends EventEmitter {
       }
 
       const host = this.activeHosts.get(session.id);
-      if (session.state === 'working' && !host) {
+      // A turn waiting on an approval or a form was still in progress too
+      const wasWorking =
+        session.state === 'working' ||
+        (!host && (session.state === 'blocked' || Boolean(session.pendingPermission || session.pendingElicitation)));
+      // The agent was running when CodePit last closed (quit or crash): offer it back, never restart it here.
+      // A mark another live CodePit on the same data dir owns is its agent, not ours to offer
+      const live = session.agentLive;
+      if (live && !host && !(live.pid !== process.pid && liveMarkOwnerAlive(live))) {
+        if (!session.user.cleanup && hasAgent(session.agentId)) {
+          session.restore = {
+            runningSince: live.since,
+            foundAt: Date.now(),
+            turnInterrupted: wasWorking,
+            continues: Boolean(resumableSessionId(session)),
+          };
+        }
+        delete session.agentLive;
+        sessionChanged = true;
+      }
+      if (wasWorking && !host) {
         // The last run of CodePit ended with this turn still going: say so where the reply stops
+        // Stays true after a Restore or a Dismiss, so it names no button (the restore offer says that)
         const now = Date.now();
         session.turns.push({
           id: `sys-${now}-interrupted`,
           role: 'system',
-          content: resumableSessionId(session)
+          content: (resumableSessionId(session)
             ? 'CodePit stopped while this turn was running, so the agent stopped too. Your next message continues the same agent session; ask it to carry on.'
-            : 'CodePit stopped while this turn was running, so the agent stopped too. Your next message starts the agent again with a summary of this conversation.',
+            : 'CodePit stopped while this turn was running, so the agent stopped too. Your next message starts the agent again with a summary of this conversation.'),
           timestamp: now,
         });
       }
-      if ((session.state === 'working' && (!host || !host.isTurnInFlight)) || session.state === 'crashed') {
+      if ((session.state === 'working' && (!host || !host.isTurnInFlight)) || session.state === 'crashed' || (session.state === 'blocked' && !host)) {
         session.state = 'needs_you';
         sessionChanged = true;
       }
@@ -475,6 +515,8 @@ export class SessionManager extends EventEmitter {
       turnCount: s.turns.length,
       model: s.model || getAgent(s.agentId)?.defaultModel,
       isAgentRunning: this.activeHosts.has(s.id),
+      restore: s.user.cleanup ? undefined : s.restore,
+      restoring: this.restoring.has(s.id) || undefined,
       compacting: this.compactionRuns.has(s.id) || s.turns.some((t) => t.compaction?.status === 'running'),
       workingInBackground: isWorkingInBackground(s, s.state),
       titleSource: s.titleSource,
@@ -695,12 +737,16 @@ export class SessionManager extends EventEmitter {
         if (host.mcpInfo) current.mcp = host.mcpInfo;
         this.recordAgentStart(current, host, opts.beforeTurnId);
         noteModelRefused(current, host, opts.beforeTurnId);
+        // On disk for as long as it runs: a quit or a crash leaves it, and the next start offers a restore
+        current.agentLive = { since: Date.now(), pid: process.pid, started: PROCESS_STARTED, boot: bootTime() };
+        // Any start (a message, Start, compact, restore) is the user taking the session back
+        delete current.restore;
         store.save(current, { touch: false });
         this.emit('sessionStream', {
           sessionId: current.id,
           type: 'agentSession',
           // Always an array so the client's shallow merge clears an emptied list
-          session: { agentSessionId: current.agentSessionId, agentResume: current.agentResume, parkedAgentResumes: current.parkedAgentResumes ?? [], agentSessions: current.agentSessions, turns: current.turns },
+          session: { agentSessionId: current.agentSessionId, agentResume: current.agentResume, parkedAgentResumes: current.parkedAgentResumes ?? [], agentSessions: current.agentSessions, turns: current.turns, restore: undefined },
         });
       }
       return host;
@@ -1120,6 +1166,8 @@ export class SessionManager extends EventEmitter {
       if (this.activeHosts.get(session.id) !== host) return;
       if (host.sessionId) this.endAgentSession(session.id, host.sessionId, 'The agent process exited');
       this.activeHosts.delete(session.id);
+      // It exited by itself while CodePit was up: it was not running at shutdown
+      this.clearLiveMark(session.id);
       this.activePrompts.delete(session.id);
       activeAgentTurn = null;
       this.settleAgentCompactions(session.id, 'Stopped when the agent exited');
@@ -1470,6 +1518,7 @@ export class SessionManager extends EventEmitter {
 
     session.state = 'parked';
     session.agentStopped = true;
+    delete session.restore;
     clearPendingRequests(session);
     session.activeTerminalId = undefined;
     session.isAgentRunning = false;
@@ -1494,7 +1543,7 @@ export class SessionManager extends EventEmitter {
   /**
    * Start / Resume the underlying agent subprocess for a session.
    */
-  async startSessionAgent(sessionId: string): Promise<AcpSession> {
+  async startSessionAgent(sessionId: string, opts: { note?: string } = {}): Promise<AcpSession> {
     const session = store.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
 
@@ -1509,7 +1558,7 @@ export class SessionManager extends EventEmitter {
     session.turns.push({
       id: `sys-${Date.now()}`,
       role: 'system',
-      content: `▶️ Agent process started. Ready for prompts.`,
+      content: opts.note ?? '▶️ Agent process started. Ready for prompts.',
       timestamp: Date.now(),
     });
 
@@ -1518,6 +1567,130 @@ export class SessionManager extends EventEmitter {
     this.emit('sessionStream', { sessionId, type: 'sessionStarted', session });
 
     return session;
+  }
+
+  /**
+   * Start the agent that was running when CodePit last closed. It continues the same agent
+   * session where the agent can (ensureHost); nothing is sent again, and queued messages stay
+   * paused. A failed start keeps the offer with its error, so it can be retried or dismissed.
+   */
+  async restoreSession(sessionId: string): Promise<AcpSession> {
+    // A double click, or a row's Restore during Restore all: join the restore already running
+    const pending = this.restoring.get(sessionId);
+    if (pending) return pending;
+    const s = store.get(sessionId);
+    if (!s) throw new RestoreError('Session not found', 404);
+    // Being started already (Start, or a message): wait for it, and the offer is gone with the start
+    const starting = this.startingHosts.get(sessionId);
+    if (starting) {
+      await starting.promise;
+      return store.get(sessionId) ?? s;
+    }
+    // Already running (a double click, or it was started meanwhile): nothing left to offer
+    if (this.activeHosts.has(sessionId)) {
+      if (s.restore) {
+        delete s.restore;
+        store.save(s, { touch: false });
+        this.emit('sessionsUpdated', this.listSessions());
+      }
+      return s;
+    }
+    const offer = s.restore;
+    if (!offer) throw new RestoreError('Nothing to restore: its agent was not running when CodePit closed', 409);
+    if (s.user.cleanup) {
+      delete s.restore;
+      store.save(s, { touch: false });
+      this.emit('sessionsUpdated', this.listSessions());
+      throw new RestoreError('Marked for cleanup', 409);
+    }
+    // getAgent falls back to Claude for an unknown id: never start another agent in its place
+    if (!hasAgent(s.agentId)) {
+      const error = `${s.agentName} is no longer available`;
+      s.restore = { ...offer, error };
+      store.save(s, { touch: false });
+      this.emit('sessionsUpdated', this.listSessions());
+      throw new RestoreError(error, 409);
+    }
+
+    const run = this.runRestore(sessionId, offer, s.queuedPrompts?.length ?? 0);
+    this.restoring.set(sessionId, run);
+    this.emit('sessionsUpdated', this.listSessions());
+    try {
+      return await run;
+    } finally {
+      if (this.restoring.get(sessionId) === run) this.restoring.delete(sessionId);
+      this.emit('sessionsUpdated', this.listSessions());
+    }
+  }
+
+  private async runRestore(sessionId: string, offer: RestoreOffer, queued: number): Promise<AcpSession> {
+    const note = [
+      '▶️ Agent restored after CodePit restarted.',
+      offer.turnInterrupted ? 'The interrupted turn was not sent again; ask it to carry on.' : '',
+      queued > 0 ? `${queued} queued ${queued === 1 ? 'message stays' : 'messages stay'} paused until you send one.` : '',
+    ].filter(Boolean).join(' ');
+    try {
+      return await this.startSessionAgent(sessionId, { note });
+    } catch (err: any) {
+      const current = store.get(sessionId);
+      // The offer is still there unless the user took the session back meanwhile (Stop, a switch,
+      // cleanup, Dismiss): that start was shut down on purpose, so neither the host nor the offer is ours
+      if (current?.restore) {
+        this.dropHost(sessionId, 'Restore failed');
+        current.restore = { ...offer, error: err?.message || String(err) };
+        store.save(current, { touch: false });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Restore every session offered back, highest ranked first. A few at a time: agent
+   * processes are heavy, and starting a dozen at once stalls the machine.
+   */
+  async restoreAllSessions(limit = 3): Promise<{ restored: string[]; failed: Array<{ id: string; title: string; error: string }> }> {
+    const queue = sortSessions(store.getAll()).filter(
+      (s) => s.restore && !s.user.cleanup && !this.activeHosts.has(s.id) && !this.startingHosts.has(s.id) && !this.restoring.has(s.id)
+    );
+    const restored: string[] = [];
+    const failed: Array<{ id: string; title: string; error: string }> = [];
+    const worker = async () => {
+      for (let s = queue.shift(); s; s = queue.shift()) {
+        try {
+          await this.restoreSession(s.id);
+          restored.push(s.id);
+        } catch (err: any) {
+          failed.push({ id: s.id, title: s.title, error: err?.message || String(err) });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, queue.length)) }, worker));
+    return { restored, failed };
+  }
+
+  /** Stop offering this session's agent back. */
+  dismissRestore(sessionId: string): AcpSession | null {
+    const s = store.get(sessionId);
+    if (!s) return null;
+    if (s.restore) {
+      delete s.restore;
+      store.save(s, { touch: false });
+      this.emit('sessionsUpdated', this.listSessions());
+    }
+    return s;
+  }
+
+  /** Stop offering every agent back; returns how many offers were dropped. */
+  dismissAllRestores(): number {
+    let dismissed = 0;
+    for (const s of store.getAll()) {
+      if (!s.restore) continue;
+      delete s.restore;
+      store.save(s, { touch: false });
+      dismissed++;
+    }
+    if (dismissed > 0) this.emit('sessionsUpdated', this.listSessions());
+    return dismissed;
   }
 
   /**
@@ -1566,6 +1739,8 @@ export class SessionManager extends EventEmitter {
 
     // Shutdown previous host process so new host can be spun up on next turn
     this.dropHost(sessionId, 'Model or agent switched');
+    // The conversation moved on to another agent or model: the old agent is not offered back
+    delete session.restore;
     if (targetAgent.id !== session.agentId || targetModel !== session.model) {
       // Choices and window belong to the old model; the new one reports its own when it starts
       session.agentOptions = cachedAgentOptions(targetAgent.id, targetModel);
@@ -1788,6 +1963,7 @@ export class SessionManager extends EventEmitter {
     }
     this.dropHost(sessionId, 'Set aside for a fresh agent session');
     ptyManager.release(`session-term-${sessionId}`);
+    delete session.restore;
     // A form or approval from work outside a turn died with the agent
     if (clearPendingRequests(session) && session.state === 'blocked') session.state = 'needs_you';
     dropAgentResume(session, 'Set aside for a fresh agent session');
@@ -2182,6 +2358,7 @@ export class SessionManager extends EventEmitter {
     // If requested, archive/clean up previous session
     if (opts?.archivePrevious) {
       current.user.cleanup = true;
+      delete current.restore;
       store.save(current);
     }
 
@@ -2305,6 +2482,9 @@ export class SessionManager extends EventEmitter {
   }
 
   updateAnnotations(sessionId: string, updates: Partial<UserAnnotations>): AcpSession | null {
+    // A session marked for cleanup is not offered back
+    const marked = updates.cleanup === true ? store.get(sessionId) : null;
+    if (marked?.restore) delete marked.restore;
     const updated = store.updateAnnotations(sessionId, updates);
     if (updated) {
       this.emit('sessionsUpdated', this.listSessions());
@@ -2335,7 +2515,7 @@ export class SessionManager extends EventEmitter {
   shutdown(): void {
     if (this.pollTimer) clearInterval(this.pollTimer);
     for (const id of [...this.activeHosts.keys(), ...this.startingHosts.keys()]) {
-      this.dropHost(id);
+      this.dropHost(id, 'CodePit quit', { appQuit: true });
     }
     // Agent terminals go with their hosts; this also ends the interactive session shells
     ptyManager.releaseAll();
@@ -2583,6 +2763,52 @@ function claudeSubagentTranscript(s: AcpSession, audit: TaskAudit): string | und
 
 // ---------------------------------------------------------------------------
 // Continuing agent sessions and Claude keywords
+
+/** Whether a process with this pid is alive (EPERM: alive, but another user's). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === 'EPERM';
+  }
+}
+
+/** When this CodePit process started (ms). */
+const PROCESS_STARTED = Date.now() - process.uptime() * 1000;
+
+/** When the machine booted (ms); drifts by a second or so between calls. */
+function bootTime(): number {
+  return Date.now() - os.uptime() * 1000;
+}
+
+/** When the process with this pid started (ms), from ps; undefined where ps cannot say. */
+function processStartTime(pid: number): number | undefined {
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000, env: { ...process.env, LC_ALL: 'C' } }).trim();
+    const t = out ? Date.parse(out) : NaN;
+    return Number.isFinite(t) ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the CodePit that wrote a live mark is still running. A bare pid is not enough: after a
+ * reboot (or a long time) the pid belongs to some other process, and the offer would never come.
+ * Marks from before `started`/`boot` were recorded fall back to the pid alone.
+ */
+function liveMarkOwnerAlive(live: { pid: number; started?: number; boot?: number }): boolean {
+  if (!pidAlive(live.pid)) return false;
+  // Booted since: no process from before survives a reboot
+  if (live.boot !== undefined && Math.abs(bootTime() - live.boot) > 60_000) return false;
+  if (live.started !== undefined) {
+    // ps reports whole seconds; a pid that started at another time is another process
+    const started = processStartTime(live.pid);
+    if (started !== undefined && Math.abs(started - live.started) > 2_000) return false;
+  }
+  return true;
+}
 
 /** The saved agent session this session may continue: same agent, same folder. */
 function resumableSessionId(s: AcpSession): string | undefined {

@@ -115,7 +115,9 @@ as they would in your terminal, using your existing logins.
 
 ### Mac app
 - A packaged Electron app with the server inside it. Quitting asks first when
-  agents are running, and the next message resumes each agent's own session.
+  agents are running. After a quit or a crash, CodePit offers **Restore** (or
+  **Restore all**) for the agents that were running; each continues its own
+  agent session, and nothing is sent again without a click.
 - `npm run install:mac` installs the build you just made (see [Install](#install)).
 
 ---
@@ -157,7 +159,7 @@ other agents possible. Not everything has come across yet.
 | Embedded terminal | ✅ the Claude Code session itself | 🟡 the agent's commands, plus your own shell per session |
 | Search inside the terminal (`⌘F`) | ✅ | ❌ |
 | Terminal reconnects on its own after sleep | ✅ | 🟡 the app reconnects; a terminal pane needs a click |
-| Working set offered back after a quit | ✅ | 🟡 conversations persist and agents resume; shells are not reopened |
+| Working set offered back after a quit | ✅ | 🟡 agents that were running are offered back (Restore all), even after a crash; shells are not reopened |
 | *Active only* as the default view | ✅ | 🟡 an *Active* tab, not the default |
 | List holds still under the pointer | ✅ | ❌ |
 | Resizable, hideable session list | ✅ | ❌ |
@@ -221,7 +223,7 @@ on) and `npm run dev:web` (Vite, http://127.0.0.1:5280).
 
 ```bash
 npm run typecheck
-npm test           # ACP, MCP, LAN, effort, compaction, agent tasks, migration, resume
+npm test           # ACP, MCP, LAN, effort, compaction, agent tasks, migration, resume, restore
 npm run smoke
 ```
 

@@ -275,7 +275,7 @@ app.on('before-quit', (e) => {
       message: `${running} agent${running === 1 ? ' is' : 's are'} still running.`,
       detail:
         'Quitting stops them, including any turn in progress. Every session keeps its ' +
-        'conversation, and you can start its agent again when you reopen CodePit.',
+        'conversation, and CodePit offers to restore these agents when you reopen it.',
     });
     if (response !== 1) return;
   }

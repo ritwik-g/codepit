@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 import { hasAgent, listAgents } from './agents/registry.js';
-import { AgentNotRunningError, ElicitationAnswerError, InvalidOptionError, NothingToCompactError, QueuedPromptNotFoundError, isSafeImportedSessionId, listImportableAgentSessions, sessionManager } from './acp/session-mgr.js';
+import { AgentNotRunningError, ElicitationAnswerError, InvalidOptionError, NothingToCompactError, QueuedPromptNotFoundError, RestoreError, isSafeImportedSessionId, listImportableAgentSessions, sessionManager } from './acp/session-mgr.js';
 import { parseAutoCompact } from './compaction.js';
 import { TurnInFlightError } from './acp/client-host.js';
 import { searchSessions } from './search.js';
@@ -74,6 +74,25 @@ apiRouter.put('/settings/favorite-models', (req: Request, res: Response) => {
 // 2. List attention-ranked sessions
 apiRouter.get('/sessions', (_req: Request, res: Response) => {
   res.json({ sessions: sessionManager.listSessions() });
+});
+
+function restoreFailed(res: Response, err: any) {
+  res.status(err instanceof RestoreError ? err.status : 500).json({ error: err.message });
+}
+
+// 2b. Restore (or dismiss) every agent that was running when CodePit last closed.
+// Registered before any /sessions/:id route: DELETE /sessions/:id would otherwise take
+// "restore-all" for a session id
+apiRouter.post('/sessions/restore-all', async (_req: Request, res: Response) => {
+  try {
+    res.json(await sessionManager.restoreAllSessions());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.delete('/sessions/restore-all', (_req: Request, res: Response) => {
+  res.json({ dismissed: sessionManager.dismissAllRestores() });
 });
 
 // 3. Discover conversations an agent can continue when creating a new CodePit session.
@@ -291,6 +310,24 @@ apiRouter.post('/sessions/:id/start', async (req: Request, res: Response) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// 6d. Restore the agent that was running when CodePit last closed; nothing is sent again
+apiRouter.post('/sessions/:id/restore', async (req: Request, res: Response) => {
+  try {
+    const session = await sessionManager.restoreSession(sid(req));
+    res.json({ session });
+  } catch (err: any) {
+    restoreFailed(res, err);
+  }
+});
+
+apiRouter.delete('/sessions/:id/restore', (req: Request, res: Response) => {
+  if (!sessionManager.dismissRestore(sid(req))) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  res.json({ ok: true });
 });
 
 // 7. Resolve permission

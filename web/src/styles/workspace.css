@@ -966,6 +966,35 @@
   color: var(--text-2);
 }
 
+/* The agent was running when CodePit closed: the approval card's frame, in warn */
+.ws-approval.ws-restore {
+  border-color: var(--warn-border);
+  box-shadow: var(--shadow), inset 3px 0 0 var(--warn);
+}
+
+.ws-restore .ws-approval-icon {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.ws-restore .ws-approval-kicker {
+  color: var(--warn);
+}
+
+.ws-restore-text {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.ws-restore-error {
+  margin-top: var(--space-1);
+  color: var(--danger);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
 /* ========================================================= Question card */
 
 /* A form the agent asks the user to fill in: the approval card's frame, with fields */
