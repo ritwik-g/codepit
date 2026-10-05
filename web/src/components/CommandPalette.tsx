@@ -39,9 +39,20 @@ type Item =
       snippet?: string;
       term?: string;
     }
-  | { kind: 'action'; key: string; group: string; action: PaletteAction; score: number; match: number[] };
+  | { kind: 'action'; key: string; group: string; action: PaletteAction; score: number; match: number[] }
+  | { kind: 'tag'; key: string; group: string; tag: string; count: number; score: number; match: number[] };
 
-const GROUP_ORDER = ['Sessions', 'Current session', 'Actions', 'In transcripts'];
+const GROUP_ORDER = ['Tags', 'Sessions', 'Current session', 'Actions', 'In transcripts'];
+
+/**
+ * "#bil" is a tag being typed; "#billing " (with the space) a chosen tag, and any words
+ * after it narrow the sessions by title.
+ */
+function parseTagQuery(q: string): { tag: string; chosen: boolean; rest: string } | null {
+  const m = /^#([^\s#]*)(\s+(.*))?$/.exec(q);
+  if (!m) return null;
+  return { tag: m[1].toLowerCase(), chosen: m[2] !== undefined, rest: (m[3] || '').trim() };
+}
 
 /**
  * Fuzzy match: a contiguous substring scores highest (more at a word start),
@@ -74,7 +85,7 @@ function fuzzy(query: string, text: string): { score: number; match: number[] } 
 }
 
 function sessionHaystack(s: SessionSummary): string {
-  return [folderName(s.cwd), s.agentName, s.git?.branch, s.model].filter(Boolean).join(' ');
+  return [folderName(s.cwd), s.agentName, s.git?.branch, s.model, ...(s.user.tags || []).map((t) => `#${t}`)].filter(Boolean).join(' ');
 }
 
 /** A short excerpt around the first transcript hit for the query. */
@@ -156,7 +167,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   // update results, so a slow response for an old query can't overwrite it.
   useEffect(() => {
     const q = query.trim();
-    if (q.length < 2) {
+    if (q.length < 2 || q.startsWith('#')) {
       requestSeq.current++;
       setTranscriptHits(null);
       setSearching(false);
@@ -186,11 +197,41 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     const q = query.trim();
     const out: Item[] = [];
 
+    // "#…": tags, then the sessions carrying them
+    const tagQuery = parseTagQuery(query.trimStart());
+    if (tagQuery) {
+      const counts = new Map<string, number>();
+      for (const s of sessions) for (const t of s.user.tags || []) counts.set(t, (counts.get(t) || 0) + 1);
+      if (!tagQuery.chosen) {
+        const tags = [...counts.entries()]
+          .filter(([t]) => t.includes(tagQuery.tag))
+          .map(([t, count]) => ({ t, count, at: t.indexOf(tagQuery.tag) }))
+          .sort((a, b) => a.at - b.at || b.count - a.count || a.t.localeCompare(b.t));
+        for (const { t, count, at } of tags.slice(0, 8)) {
+          const match = tagQuery.tag ? Array.from({ length: tagQuery.tag.length }, (_, i) => at + 1 + i) : [];
+          out.push({ kind: 'tag', key: `tag:${t}`, group: 'Tags', tag: t, count, score: 0, match });
+        }
+      }
+      const tagged: Item[] = [];
+      for (const s of sessions) {
+        const tags = s.user.tags || [];
+        const hit = tagQuery.chosen ? tags.includes(tagQuery.tag) : tags.some((t) => t.includes(tagQuery.tag));
+        if (!hit || (!tagQuery.tag && !tagQuery.chosen && tags.length === 0)) continue;
+        const title = tagQuery.rest ? fuzzy(tagQuery.rest, s.title) : { score: 0, match: [] };
+        if (!title) continue;
+        tagged.push({ kind: 'session', key: `s:${s.id}`, group: 'Sessions', session: s, score: title.score, match: title.match });
+      }
+      tagged.sort((a, b) => b.score - a.score);
+      out.push(...tagged.slice(0, 12));
+      return out.sort((a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group));
+    }
+
     // Sessions
     const sessionItems: Item[] = [];
     for (const s of sessions) {
       if (!q) {
-        if (s.id === currentSessionId) continue;
+        // Sessions marked for cleanup are left out until searched for
+        if (s.id === currentSessionId || s.user.cleanup) continue;
         sessionItems.push({ kind: 'session', key: `s:${s.id}`, group: 'Sessions', session: s, score: 0, match: [] });
         continue;
       }
@@ -255,6 +296,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   const run = (item: Item | undefined) => {
     if (!item) return;
+    if (item.kind === 'tag') {
+      // Choosing a tag keeps the palette open on that tag's sessions
+      setQuery(`#${item.tag} `);
+      inputRef.current?.focus();
+      return;
+    }
     onClose();
     if (item.kind === 'session') onSelectSession(item.session.id);
     else item.action.run();
@@ -287,7 +334,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           ref={inputRef}
           className="cmdk-input"
           type="text"
-          placeholder="Search sessions or run a command"
+          placeholder="Search sessions, #tags or run a command"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
@@ -322,7 +369,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 onMouseMove={() => index !== selected && setSelected(index)}
                 onClick={() => run(item)}
               >
-                {item.kind === 'session' ? <SessionOption item={item} /> : <ActionOption item={item} />}
+                {item.kind === 'session' ? (
+                  <SessionOption item={item} />
+                ) : item.kind === 'tag' ? (
+                  <TagOption item={item} />
+                ) : (
+                  <ActionOption item={item} />
+                )}
               </div>
             </React.Fragment>
           );
@@ -334,6 +387,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               ? `Transcript search failed: ${searchError}`
               : searching
               ? 'Searching transcripts…'
+              : query.trim().startsWith('#')
+              ? 'No tags match. Add tags from a session\'s Tags tab.'
               : `Nothing matches "${query.trim()}".`}
           </div>
         )}
@@ -384,6 +439,11 @@ const SessionOption: React.FC<{ item: Extract<Item, { kind: 'session' }> }> = ({
               <span>{folderName(s.cwd)}</span>
               {s.git?.branch && <span className="cmdk-sub-sep">{s.git.branch}</span>}
               {model && <span className="cmdk-sub-sep mono">{model}</span>}
+              {(s.user.tags || []).map((t) => (
+                <span key={t} className="tag-chip is-small">
+                  <span className="tag-chip-label">#{t}</span>
+                </span>
+              ))}
             </>
           )}
         </span>
@@ -395,6 +455,24 @@ const SessionOption: React.FC<{ item: Extract<Item, { kind: 'session' }> }> = ({
     </>
   );
 };
+
+const TagOption: React.FC<{ item: Extract<Item, { kind: 'tag' }> }> = ({ item }) => (
+  <>
+    <span className="cmdk-item-lead cmdk-action-icon">
+      <Icon name="hash" size={14} />
+    </span>
+    <span className="cmdk-item-body">
+      <span className="cmdk-item-title">
+        <Highlight text={`#${item.tag}`} match={item.match} />
+      </span>
+    </span>
+    <span className="cmdk-item-trail">
+      <span className="cmdk-time">
+        {item.count} session{item.count === 1 ? '' : 's'}
+      </span>
+    </span>
+  </>
+);
 
 const ActionOption: React.FC<{ item: Extract<Item, { kind: 'action' }> }> = ({ item }) => (
   <>

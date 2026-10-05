@@ -397,6 +397,10 @@ export interface AcpSession {
   contextWindow?: number;
   /** "Compact when finished" for this session. */
   autoCompact?: AutoCompactSetting;
+  /** When the agent last finished a turn. */
+  lastTurnEndedAt?: number;
+  /** When the user last had this session open. */
+  seenAt?: number;
 }
 
 export interface SessionSummary {
@@ -430,6 +434,14 @@ export interface SessionSummary {
   compacting?: boolean;
   /** The turn ended but subagents, workflows or background commands it started still run. */
   workingInBackground?: boolean;
+  titleSource?: 'user' | 'agent' | 'auto';
+  /** What the context holds now, and the window the agent reported (absent: use the model table). */
+  contextTokens?: number;
+  contextWindow?: number;
+  lastTurnEndedAt?: number;
+  seenAt?: number;
+  /** Estimated: when the agent's prompt cache lapses (Claude only; no agent reports it). */
+  cacheExpiresAt?: number;
 }
 
 export interface VendorRateLimitWindow {

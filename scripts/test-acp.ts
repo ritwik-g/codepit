@@ -19,7 +19,8 @@ const { store } = await import('../server/store.js');
 const { getAppDir, getSessionsDir } = await import('../server/paths.js');
 const { TurnInFlightError } = await import('../server/acp/client-host.js');
 const { checkAccess, getRemoteAddress } = await import('../server/security.js');
-const { apiRouter } = await import('../server/api.js');
+const { apiRouter, parseAnnotations } = await import('../server/api.js');
+const { promptCacheExpiry } = await import('../server/acp/session-mgr.js');
 const { parseElicitationFields, validateElicitationContent } = await import('../server/acp/elicitation.js');
 const { default: express } = await import('express');
 const { AGENT_REGISTRY } = await import('../server/agents/registry.js');
@@ -869,6 +870,61 @@ async function runTests() {
     const lanUnpaired = checkAccess(fakeRequest({ remote: '192.168.1.50', headers: { host: '192.168.1.5:7890', origin: 'http://192.168.1.5:7890' } }));
     if (lanUnpaired.ok || lanUnpaired.status !== 401) throw new Error('Same-origin LAN request without a paired cookie must be 401');
     console.log('   ✅ Spoofed loopback header, cross-origin and rebinding requests rejected\n');
+
+    // 10g. The agent names the session unless the user did; a finished turn stays unseen until opened
+    const named = await sessionManager.createSession({ agentId: 'mock', cwd: testDir });
+    await waitForIdle(named.id);
+    await sessionManager.sendPrompt(named.id, 'Please name this session Fix the login bug');
+    await waitForIdle(named.id);
+    const afterName = sessionManager.getSession(named.id)!;
+    if (afterName.title !== 'Fix the login bug' || afterName.titleSource !== 'agent') {
+      throw new Error(`Agent title not applied: "${afterName.title}" (${afterName.titleSource})`);
+    }
+    const namedSummary = sessionManager.listSessions().find((x) => x.id === named.id)!;
+    if (!namedSummary.lastTurnEndedAt || (namedSummary.seenAt ?? 0) >= namedSummary.lastTurnEndedAt) {
+      throw new Error('A finished turn must be unseen until the session is opened');
+    }
+    if (namedSummary.cacheExpiresAt !== undefined) throw new Error('The mock agent has no known prompt cache lifetime');
+    sessionManager.markSeen(named.id);
+    const seenSummary = sessionManager.listSessions().find((x) => x.id === named.id)!;
+    if (!seenSummary.seenAt || seenSummary.seenAt < seenSummary.lastTurnEndedAt!) throw new Error('markSeen did not mark the turn seen');
+    if (seenSummary.updatedAt !== namedSummary.updatedAt) throw new Error('Opening a session must not count as activity');
+    await sessionManager.sendPrompt(named.id, 'Please name this session /usage');
+    await waitForIdle(named.id);
+    if (sessionManager.getSession(named.id)!.title !== 'Fix the login bug') throw new Error('A bare slash command must not become the title');
+    const userNamed = store.get(named.id)!;
+    userNamed.title = 'My own name';
+    userNamed.titleSource = 'user';
+    store.save(userNamed);
+    await sessionManager.sendPrompt(named.id, 'Please name this session Something else');
+    await waitForIdle(named.id);
+    if (sessionManager.getSession(named.id)!.title !== 'My own name') throw new Error('An agent title must not replace a name the user gave');
+    console.log('   ✅ Agent titles apply until the user renames; finished turns unseen until opened');
+
+    // 10h. Claude's prompt cache: 1 hour on a subscription, 5 minutes on an API key; unknown for others
+    const ended = 1_000_000;
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    if (promptCacheExpiry({ agentId: 'claude', lastTurnEndedAt: ended }) !== ended + 3_600_000) throw new Error('Subscription cache should last 1 hour');
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    if (promptCacheExpiry({ agentId: 'claude', lastTurnEndedAt: ended }) !== ended + 300_000) throw new Error('API-key cache should last 5 minutes');
+    if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = savedKey;
+    if (promptCacheExpiry({ agentId: 'codex', model: 'gpt-5', lastTurnEndedAt: ended }) !== undefined) throw new Error('Codex cache lifetime is not known');
+    if (promptCacheExpiry({ agentId: 'claude' }) !== undefined) throw new Error('No finished turn, no cache');
+    console.log('   ✅ Prompt cache expiry estimated for Claude only');
+
+    // 10i. Annotation patches keep only known fields of the right type; tags are normalised
+    const tagged = parseAnnotations({ tags: ['#Infra Work', 'infra-work', ' review ', ''], pinned: true, evil: 'x' });
+    if (typeof tagged === 'string') throw new Error(`Valid annotations refused: ${tagged}`);
+    if (JSON.stringify(tagged) !== JSON.stringify({ pinned: true, tags: ['infra-work', 'review'] })) {
+      throw new Error(`Unexpected parsed annotations: ${JSON.stringify(tagged)}`);
+    }
+    for (const bad of [{ tags: 'x' }, { tags: [1] }, { priority: 'p9' }, { snoozedUntil: 'soon' }, { pinned: 'yes' }, [], null]) {
+      if (typeof parseAnnotations(bad) !== 'string') throw new Error(`Bad annotations accepted: ${JSON.stringify(bad)}`);
+    }
+    if (typeof parseAnnotations({ tags: Array.from({ length: 13 }, (_, i) => `t${i}`) }) !== 'string') throw new Error('More than 12 tags accepted');
+    console.log('   ✅ Annotation patches validated\n');
 
     console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! 🚀');
   } finally {

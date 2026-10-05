@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AcpSession, AgentDescriptor } from '../types';
+import type { AcpSession, AgentDescriptor, SessionSummary } from '../types';
 import { api } from '../api';
 import { useEscapeLayer } from '../hooks';
 import { LiveTerminalPanel } from './LiveTerminalPanel';
@@ -22,6 +22,7 @@ import { nextPriority } from './sessionMeta';
 import { AgentsPanel, agentTaskCounts } from './AgentsView';
 import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
+import { SnoozeModal, TagsPanel } from './SessionOrganize';
 
 // Other areas import these from here.
 export { STATE_LABEL, formatTime, nextPriority } from './sessionMeta';
@@ -36,6 +37,9 @@ interface SessionDetailProps {
   onBackToList?: () => void;
   onDeleted?: (id: string) => void;
   totalSessionsCount?: number;
+  /** Every session: the Tags tab suggests their tags and lists the ones sharing this session's. */
+  allSessions?: SessionSummary[];
+  onSelectSession?: (id: string) => void;
 }
 
 /** The session workspace: header, tabs, conversation / terminal / usage, and the composer. */
@@ -49,9 +53,12 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   onBackToList,
   onDeleted,
   totalSessionsCount,
+  allSessions = [],
+  onSelectSession,
 }) => {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('conversation');
   const [showMobileActions, setShowMobileActions] = useState(false);
+  const [showSnooze, setShowSnooze] = useState(false);
   const [promptText, setPromptText] = useState('');
   const [rollingBack, setRollingBack] = useState(false);
   const [requestingCompaction, setRequestingCompaction] = useState(false);
@@ -189,9 +196,9 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   const handleTogglePin = () => updateAnnotations({ pinned: !session.user.pinned });
   const handleToggleCleanup = () => updateAnnotations({ cleanup: !session.user.cleanup });
   const isSnoozed = Boolean(session.user.snoozedUntil && session.user.snoozedUntil > Date.now());
-  // Snoozing drops the session to the bottom of the ranking for an hour; the
-  // server wakes it automatically when the time is up.
-  const handleToggleSnooze = () => updateAnnotations({ snoozedUntil: isSnoozed ? null : Date.now() + 60 * 60 * 1000 });
+  // Snoozing drops the session to the bottom of the ranking; the server wakes it
+  // automatically when the time is up.
+  const handleToggleSnooze = () => (isSnoozed ? updateAnnotations({ snoozedUntil: null }) : setShowSnooze(true));
   const handleToggleAutoApprove = () => updateAnnotations({ autoApprove: !session.user.autoApprove });
 
   const handleRename = async (next: string): Promise<boolean> => {
@@ -311,7 +318,8 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
       onSelect: handleCompactSession,
       disabled: !canCompact || compacting,
     },
-    { label: isSnoozed ? 'Wake session' : 'Snooze for 1 hour', icon: 'moon', onSelect: handleToggleSnooze },
+    { label: isSnoozed ? 'Wake session' : 'Snooze…', icon: 'moon', onSelect: handleToggleSnooze },
+    { label: session.user.tags?.length ? 'Edit tags' : 'Add tags', icon: 'hash', onSelect: () => changeTab('tags') },
     { label: session.user.cleanup ? 'Unmark cleanup' : 'Mark for cleanup', icon: 'check', onSelect: handleToggleCleanup, hint: 'c' },
     'divider',
     { label: 'Delete session', icon: 'trash', onSelect: handleDelete, danger: true },
@@ -344,6 +352,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
         estimatedCost={estimatedCost}
         agentTasks={agentTaskCounts(session)}
         agentSessionCount={session.agentSessions?.length}
+        tagCount={session.user.tags?.length}
       />
 
       <AgentTaskNavContext.Provider value={openAgentTasks}>
@@ -375,6 +384,14 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
           </>
         ) : activeTab === 'terminal' ? (
           <LiveTerminalPanel session={session} />
+        ) : activeTab === 'tags' ? (
+          <TagsPanel
+            sessionId={session.id}
+            tags={session.user.tags || []}
+            sessions={allSessions}
+            onSave={(tags) => updateAnnotations({ tags })}
+            onSelectSession={onSelectSession}
+          />
         ) : (
           <UsageTab
             session={session}
@@ -420,6 +437,10 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
         }
       />
 
+      {showSnooze && (
+        <SnoozeModal snoozedUntil={session.user.snoozedUntil} onSnooze={(until) => updateAnnotations({ snoozedUntil: until })} onClose={() => setShowSnooze(false)} />
+      )}
+
       {showMobileActions && (
         <MobileActionSheet
           session={session}
@@ -440,6 +461,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
           onTogglePin={handleTogglePin}
           onToggleCleanup={handleToggleCleanup}
           onToggleSnooze={handleToggleSnooze}
+          onEditTags={() => changeTab('tags')}
           onOpenSubscriptionsModal={onOpenSubscriptionsModal}
           onOpenMcp={onOpenMcp}
           onStopAgent={handleStopAgent}

@@ -42,14 +42,14 @@ const isOpenAiAgent = (agentId: string) => /codex|openai/.test(agentId);
  * Context window and list prices used for the usage estimates. The window is the
  * one the agent reported when known; model ids ending in [1m] or -1m mean 1M.
  */
-export function sessionPricing(session: AcpSession): ModelPricing {
+export function sessionPricing(session: Pick<AcpSession, 'agentId' | 'model' | 'contextWindow'>): ModelPricing {
   const listed = listPricing(session);
   const hint = /(?:\[(\d+)m\]|-(\d+)m)$/i.exec(session.model || '');
   const contextWindow = session.contextWindow || (hint ? Number(hint[1] ?? hint[2]) * 1_000_000 : listed.contextWindow);
   return contextWindow === listed.contextWindow ? listed : { ...listed, contextWindow };
 }
 
-function listPricing(session: AcpSession): ModelPricing {
+function listPricing(session: Pick<AcpSession, 'agentId' | 'model'>): ModelPricing {
   const agentId = (session.agentId || '').toLowerCase();
   const m = (session.model || '').toLowerCase();
 

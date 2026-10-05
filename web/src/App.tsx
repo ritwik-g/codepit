@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { AcpSession, AgentDescriptor, AgentTask, AgentTaskTextDelta, McpServer, SessionSummary } from './types';
 import { api, connectWebSocket, isUnauthorized, type PairingRequestInfo } from './api';
 import { Sidebar } from './components/Sidebar';
@@ -13,7 +13,8 @@ import { NetworkModal } from './components/NetworkModal';
 import { PairScreen } from './components/PairScreen';
 import { McpModal } from './components/mcp/McpModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { MOD_KEY, needsAttention } from './components/Sidebar';
+import { MOD_KEY, isUnseen, needsAttention } from './components/Sidebar';
+import { askForNotificationsOnFirstGesture, notificationsEnabled, notificationsSupported, sessionAlert, setNotificationsEnabled, showAlert } from './notify';
 import { useTheme } from './design/theme';
 import { Button, Icon, IconButton, Spinner } from './ui';
 
@@ -81,6 +82,7 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
   const { resolved: resolvedTheme, preference: themePreference, setPreference: setThemePreference } = useTheme();
+  const [notifyOn, setNotifyOn] = useState(notificationsEnabled);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -136,6 +138,41 @@ export const App: React.FC = () => {
       api.getMcpServers().then((res) => setMcpServers(res.servers)).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [fetchSessions]);
+
+  // System notifications: a turn finished, or the agent asks something. Not for the session
+  // the user is looking at right now.
+  const prevSessionsRef = useRef<Map<string, SessionSummary>>(new Map());
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  useEffect(() => askForNotificationsOnFirstGesture(), []);
+  useEffect(() => {
+    const prev = prevSessionsRef.current;
+    const first = prev.size === 0;
+    for (const s of sessions) {
+      const alert = first ? null : sessionAlert(prev.get(s.id), s);
+      if (!alert) continue;
+      const looking = document.visibilityState === 'visible' && document.hasFocus() && selectedIdRef.current === s.id;
+      if (!looking) {
+        showAlert(alert, () => {
+          setSelectedId(s.id);
+          setMobileView('session');
+        });
+      }
+    }
+    prevSessionsRef.current = new Map(sessions.map((s) => [s.id, s]));
+  }, [sessions]);
+
+  // The open session's finished turn counts as seen while the window is in front
+  const selectedUnseen = sessions.some((s) => s.id === selectedId && isUnseen(s));
+  useEffect(() => {
+    if (!selectedId || !selectedUnseen) return;
+    const mark = () => {
+      if (document.visibilityState === 'visible') api.markSeen(selectedId).catch(() => {});
+    };
+    mark();
+    document.addEventListener('visibilitychange', mark);
+    return () => document.removeEventListener('visibilitychange', mark);
+  }, [selectedId, selectedUnseen]);
 
   // Load session detail on selection change
   useEffect(() => {
@@ -467,6 +504,18 @@ export const App: React.FC = () => {
         run: () => setThemePreference('system'),
       });
     }
+    if (notificationsSupported()) {
+      list.push({
+        id: 'notifications',
+        label: notifyOn ? 'Turn off notifications' : 'Turn on notifications',
+        icon: 'bell',
+        group: 'Actions',
+        keywords: 'notify alert finished question approval desktop system',
+        run: () => {
+          setNotificationsEnabled(!notifyOn).then(setNotifyOn);
+        },
+      });
+    }
     list.push(
       {
         id: 'lan',
@@ -505,7 +554,7 @@ export const App: React.FC = () => {
       });
     }
     return list;
-  }, [activeSession, selectedId, agents, resolvedTheme, themePreference, annotate, openNewSession, goHome, setThemePreference]);
+  }, [activeSession, selectedId, agents, resolvedTheme, themePreference, notifyOn, annotate, openNewSession, goHome, setThemePreference]);
 
   // Not paired, or revoked while open: a 401 is final, whatever is already on screen
   if (authError) {
@@ -558,6 +607,11 @@ export const App: React.FC = () => {
             onBackToList={() => setMobileView('list')}
             onDeleted={handleDeleted}
             totalSessionsCount={sessions.length}
+            allSessions={sessions}
+            onSelectSession={(id) => {
+              setSelectedId(id);
+              setMobileView('session');
+            }}
           />
         </ErrorBoundary>
       ) : selectedId ? (

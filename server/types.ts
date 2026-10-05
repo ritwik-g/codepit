@@ -459,6 +459,10 @@ export interface AcpSession {
   contextWindow?: number;
   /** "Compact when finished" for this session. */
   autoCompact?: AutoCompactSetting;
+  /** When the agent last finished a turn: the prompt cache was last written then. */
+  lastTurnEndedAt?: number;
+  /** When the user last had this session open; a turn that ended after it is unseen. */
+  seenAt?: number;
 }
 
 export interface QueuedPrompt {
@@ -500,6 +504,18 @@ export interface SessionSummary {
   compacting?: boolean;
   /** The turn ended but subagents, workflows or background commands it started still run. */
   workingInBackground?: boolean;
+  titleSource: AcpSession['titleSource'];
+  /** What the context holds now, and the window the agent reported (absent: use the model table). */
+  contextTokens: number;
+  contextWindow?: number;
+  lastTurnEndedAt?: number;
+  seenAt?: number;
+  /**
+   * When the agent's prompt cache is expected to lapse, for agents whose cache lifetime is
+   * known (Claude: 1 hour on a subscription, 5 minutes on an API key). An estimate: no
+   * agent reports it.
+   */
+  cacheExpiresAt?: number;
 }
 
 // ------------------------------------------------------------------ MCP

@@ -4,6 +4,7 @@ import { VendorIcon } from './VendorLogos';
 import { Badge, Button, Icon, IconButton, Input, Kbd, StatusDot, type Tone } from '../ui';
 import { ThemeMenu } from './ThemeMenu';
 import { BrandMark } from './BrandMark';
+import { formatTokens, sessionPricing } from '../pricing';
 
 // ------------------------------------------------------------------ helpers
 // Shared by the sidebar, the command palette and the home dashboard.
@@ -50,6 +51,60 @@ export function sessionStatus(
 
 export const needsAttention = (s: SessionSummary) =>
   s.state === 'blocked' || (s.state === 'needs_you' && !s.workingInBackground) || s.state === 'crashed';
+
+/** A finished turn the user has not looked at since, while nothing else runs. */
+export function isUnseen(s: SessionSummary): boolean {
+  if (s.state === 'snoozed' || isWorking(s)) return false;
+  return Boolean(s.lastTurnEndedAt && s.lastTurnEndedAt > (s.seenAt || 0));
+}
+
+/** Text filter: words match title, folder, agent, branch or a tag; "#tag" matches tags only. */
+export function matchesFilter(s: SessionSummary, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const tags = s.user.tags || [];
+  return words.every((w) => {
+    if (w.startsWith('#')) return w.length === 1 || tags.some((t) => t.startsWith(w.slice(1)));
+    return (
+      s.title.toLowerCase().includes(w) ||
+      s.cwd.toLowerCase().includes(w) ||
+      s.agentName.toLowerCase().includes(w) ||
+      Boolean(s.git?.branch && s.git.branch.toLowerCase().includes(w)) ||
+      tags.some((t) => t.includes(w))
+    );
+  });
+}
+
+/** "38m", "2h", "<1m". */
+function shortDuration(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return '<1m';
+  if (min < 60) return `${min}m`;
+  return `${Math.round(min / 60)}h`;
+}
+
+/** Context use and the estimated prompt-cache time left, for the line under a session's title. */
+export function sessionVitals(s: SessionSummary, now: number): { context?: string; contextTone?: Tone; cache?: string; cacheTone?: Tone; cacheTitle?: string } {
+  const out: ReturnType<typeof sessionVitals> = {};
+  const used = s.contextTokens || 0;
+  if (used > 0) {
+    const window = sessionPricing({ agentId: s.agentId, model: s.model, contextWindow: s.contextWindow }).contextWindow;
+    const pct = Math.min(100, Math.round((used / window) * 100));
+    out.context = `ctx ${pct}% · ${formatTokens(used)}/${formatTokens(window)}`;
+    out.contextTone = pct >= 85 ? 'danger' : pct >= 65 ? 'warn' : 'neutral';
+  }
+  if (s.cacheExpiresAt) {
+    if (isWorking(s)) {
+      out.cache = 'cache warm';
+      out.cacheTone = 'neutral';
+    } else {
+      const left = s.cacheExpiresAt - now;
+      out.cache = left > 0 ? `cache ${shortDuration(left)}` : 'cache cold';
+      out.cacheTone = left <= 0 ? 'neutral' : left < 5 * 60_000 ? 'warn' : 'ok';
+    }
+    out.cacheTitle = `Estimated: the prompt cache lapses at ${new Date(s.cacheExpiresAt).toLocaleTimeString()}. A reply after that re-reads the whole context at full price.`;
+  }
+  return out;
+}
 
 /** A turn is running, or work the agent started still runs after its turn ended. */
 export const isWorking = (s: SessionSummary) => s.state === 'working' || (s.state === 'needs_you' && Boolean(s.workingInBackground));
@@ -146,6 +201,26 @@ interface SidebarProps {
   onReturnToActiveSession?: () => void;
 }
 
+const COLLAPSED_KEY = 'codepit_sidebar_collapsed';
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((x) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
 const GROUPS: Array<{ id: string; label: string; test: (s: SessionSummary) => boolean }> = [
   { id: 'needs_you', label: 'Needs you', test: needsAttention },
   { id: 'working', label: 'Working', test: isWorking },
@@ -173,27 +248,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterText, setFilterText] = useState('');
   const filterRef = useRef<HTMLInputElement>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const toggleGroup = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  // Cache countdowns move on their own
+  const now = useNow(30_000);
 
   useEffect(() => {
     if (filterOpen) filterRef.current?.focus();
   }, [filterOpen]);
 
-  const textFiltered = sessions.filter((s) => {
-    if (!filterText) return true;
-    const q = filterText.toLowerCase();
-    return (
-      s.title.toLowerCase().includes(q) ||
-      s.cwd.toLowerCase().includes(q) ||
-      s.agentName.toLowerCase().includes(q) ||
-      Boolean(s.git?.branch && s.git.branch.toLowerCase().includes(q))
-    );
-  });
+  const textFiltered = filterText ? sessions.filter((s) => matchesFilter(s, filterText)) : sessions;
 
+  // Sessions marked for cleanup leave every view but the Cleanup tab.
   // Tab counts come from the text-filtered set, so they stay put while switching tabs.
   const tabs: Array<{ id: FilterTab; label: string; test: (s: SessionSummary) => boolean }> = [
-    { id: 'all', label: 'All', test: () => true },
-    { id: 'needs_you', label: 'Needs you', test: needsAttention },
-    { id: 'active', label: 'Active', test: (s) => needsAttention(s) || isWorking(s) },
+    { id: 'all', label: 'All', test: (s) => !s.user.cleanup },
+    { id: 'needs_you', label: 'Needs you', test: (s) => !s.user.cleanup && needsAttention(s) },
+    { id: 'active', label: 'Active', test: (s) => !s.user.cleanup && (needsAttention(s) || isWorking(s)) },
     { id: 'cleanup', label: 'Cleanup', test: (s) => s.user.cleanup },
   ];
   const activeTab = tabs.find((t) => t.id === filterTab)!;
@@ -296,7 +374,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Input
             ref={filterRef}
             type="text"
-            placeholder="Filter by title, folder, agent or branch"
+            placeholder="Filter by title, folder, branch or #tag"
             aria-label="Filter sessions by text"
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
@@ -320,17 +398,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       <div className="sb-list">
-        {groups.map((g) => (
-          <section key={g.id} className="sb-group" aria-label={g.label}>
-            <div className="sb-group-label">
-              <span>{g.label}</span>
-              <span className="sb-group-count">{g.items.length}</span>
-            </div>
-            {g.items.map((s) => (
-              <SessionRow key={s.id} session={s} isSelected={s.id === selectedId} onSelect={() => onSelectSession(s.id)} />
-            ))}
-          </section>
-        ))}
+        {groups.map((g) => {
+          // A text filter shows every match, folded or not
+          const isCollapsed = collapsed.has(g.id) && !filterText;
+          const unseen = isCollapsed ? g.items.filter((s) => isUnseen(s)).length : 0;
+          return (
+            <section key={g.id} className={`sb-group ${isCollapsed ? 'is-collapsed' : ''}`} aria-label={g.label}>
+              <button
+                type="button"
+                className="sb-group-label"
+                aria-expanded={!isCollapsed}
+                onClick={() => toggleGroup(g.id)}
+                title={isCollapsed ? `Show ${g.label.toLowerCase()} sessions` : `Hide ${g.label.toLowerCase()} sessions`}
+              >
+                <Icon name="chevronDown" size={11} className="sb-group-chevron" />
+                <span>{g.label}</span>
+                <span className="sb-group-count">{g.items.length}</span>
+                {unseen > 0 && (
+                  <span className="sb-group-unseen" title={`${unseen} finished since you last looked`}>
+                    {unseen} new
+                  </span>
+                )}
+              </button>
+              {!isCollapsed &&
+                g.items.map((s) => (
+                  <SessionRow key={s.id} session={s} now={now} isSelected={s.id === selectedId} onSelect={() => onSelectSession(s.id)} />
+                ))}
+            </section>
+          );
+        })}
 
         {filteredSessions.length === 0 && (
           <div className="sb-list-empty">
@@ -386,12 +482,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
 const SessionRow: React.FC<{
   session: SessionSummary;
+  now: number;
   isSelected: boolean;
   onSelect: () => void;
-}> = ({ session, isSelected, onSelect }) => {
+}> = ({ session, now, isSelected, onSelect }) => {
   const status = sessionStatus(session);
   const preview = sessionPreview(session);
-
+  const vitals = sessionVitals(session, now);
+  // The open session counts as seen; the ring is for the others
+  const unseen = !isSelected && isUnseen(session);
   return (
     <div
       className={`sb-row ${isSelected ? 'is-selected' : ''}`}
@@ -409,8 +508,13 @@ const SessionRow: React.FC<{
       title={session.rankSummary || undefined}
     >
       <div className="sb-row-top">
-        <span className="sb-row-dot" title={status.label}>
-          <StatusDot tone={status.tone} pulse={status.pulse} label={status.label} />
+        <span className={`sb-row-dot ${unseen ? 'is-unseen' : ''}`} title={unseen ? `${status.label} · finished since you last looked` : status.label}>
+          <StatusDot tone={status.tone} pulse={status.pulse} label={unseen ? `${status.label}, new` : status.label} />
+          {unseen && (
+            <svg className="sb-row-ring" viewBox="0 0 16 16" aria-hidden>
+              <circle cx="8" cy="8" r="6.5" pathLength={100} />
+            </svg>
+          )}
         </span>
         <span className="sb-row-title">{session.title}</span>
         {session.user.pinned && (
@@ -426,10 +530,22 @@ const SessionRow: React.FC<{
       <div className="sb-row-meta">
         <SessionMeta session={session} />
       </div>
-      {preview.text && (
-        <div className={`sb-row-preview ${preview.approval ? 'is-approval' : ''}`} title={preview.text}>
+      {preview.approval ? (
+        <div className="sb-row-preview is-approval" title={preview.text}>
           {preview.text}
         </div>
+      ) : (
+        (vitals.context || vitals.cache) && (
+          <div className="sb-row-vitals">
+            {vitals.context && <span className={`sb-vital tone-${vitals.contextTone}`}>{vitals.context}</span>}
+            {vitals.context && vitals.cache && <span className="sb-vital-sep" aria-hidden>·</span>}
+            {vitals.cache && (
+              <span className={`sb-vital tone-${vitals.cacheTone}`} title={vitals.cacheTitle}>
+                {vitals.cache}
+              </span>
+            )}
+          </div>
+        )
       )}
     </div>
   );

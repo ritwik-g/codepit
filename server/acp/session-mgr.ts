@@ -477,7 +477,23 @@ export class SessionManager extends EventEmitter {
       isAgentRunning: this.activeHosts.has(s.id),
       compacting: this.compactionRuns.has(s.id) || s.turns.some((t) => t.compaction?.status === 'running'),
       workingInBackground: isWorkingInBackground(s, s.state),
+      titleSource: s.titleSource,
+      contextTokens: s.usage.contextTokens || 0,
+      contextWindow: s.contextWindow,
+      lastTurnEndedAt: s.lastTurnEndedAt,
+      seenAt: s.seenAt,
+      cacheExpiresAt: promptCacheExpiry(s),
     }));
+  }
+
+  /** The user has the session open: its finished turns are seen. */
+  markSeen(sessionId: string): AcpSession | null {
+    const s = store.get(sessionId);
+    if (!s) return null;
+    s.seenAt = Date.now();
+    store.save(s, { touch: false });
+    this.emit('sessionsUpdated', this.listSessions());
+    return s;
   }
 
   getSession(id: string): AcpSession | null {
@@ -998,6 +1014,7 @@ export class SessionManager extends EventEmitter {
       // The compaction settles its own state, and must not count as a fresh reply
       if (this.compactionRuns.has(session.id)) return;
       s.state = 'needs_you';
+      s.lastTurnEndedAt = Date.now();
       store.save(s);
       this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted' });
       this.emit('sessionsUpdated', this.listSessions());
@@ -1023,6 +1040,19 @@ export class SessionManager extends EventEmitter {
         this.emit('sessionStream', { sessionId: s.id, type: 'promptSuggestion', promptSuggestion: suggestion });
         this.emit('sessionsUpdated', this.listSessions());
       }
+    });
+
+    host.on('agentTitle', (title: string | null) => {
+      const s = store.get(session.id);
+      // A name the user gave always wins; a cleared agent title keeps the last one. Claude
+      // falls back to the raw first prompt until it can generate a title, and a bare slash
+      // command ("/usage") names nothing
+      if (!s || !title || s.titleSource === 'user' || s.title === title || /^\/\S+$/.test(title)) return;
+      s.title = title;
+      s.titleSource = 'agent';
+      store.save(s, { touch: false });
+      this.emit('sessionStream', { sessionId: s.id, type: 'title', session: { title, titleSource: 'agent' } });
+      this.emit('sessionsUpdated', this.listSessions());
     });
 
     // Open views hear about the new numbers through onClaudeRateLimitsChanged (see init)
@@ -2313,6 +2343,21 @@ export class SessionManager extends EventEmitter {
 }
 
 export const sessionManager = new SessionManager();
+
+const CACHE_TTL_SUBSCRIPTION_MS = 60 * 60_000;
+const CACHE_TTL_API_KEY_MS = 5 * 60_000;
+
+/**
+ * When Claude's prompt cache for this session should lapse: it was last written when a turn
+ * ended, and lives 1 hour on a subscription login, 5 minutes on an API key. Claude Code uses
+ * ANTHROPIC_API_KEY when it is set. Undefined for other agents, whose cache lifetime is not known.
+ */
+export function promptCacheExpiry(s: Pick<AcpSession, 'agentId' | 'model' | 'lastTurnEndedAt'>): number | undefined {
+  if (!s.lastTurnEndedAt) return undefined;
+  const claude = /claude|anthropic/i.test(s.agentId) || /claude/i.test(s.model || '');
+  if (!claude) return undefined;
+  return s.lastTurnEndedAt + (process.env.ANTHROPIC_API_KEY ? CACHE_TTL_API_KEY_MS : CACHE_TTL_SUBSCRIPTION_MS);
+}
 
 /** Appends streamed text to the turn's last segment of the same kind and message, or starts a new one. */
 function appendTextSegment(turn: TurnMessage, kind: 'text' | 'thought', text: string, messageId?: string): void {

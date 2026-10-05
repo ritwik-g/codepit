@@ -216,6 +216,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(updates),
     }),
+  markSeen: (id: string) => request<{ ok: true }>(`/api/sessions/${id}/seen`, { method: 'POST' }),
   renameSession: (id: string, title: string) =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/title`, {
       method: 'PATCH',

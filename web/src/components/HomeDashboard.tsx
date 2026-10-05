@@ -35,9 +35,11 @@ function greeting(): string {
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 export const HomeDashboard: React.FC<HomeDashboardProps> = ({ sessions, agents, onSelectSession, onNewSession, onOpenPalette }) => {
-  const attention = sessions.filter(needsAttention);
-  const working = sessions.filter(isWorking);
-  const recent = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
+  // Sessions marked for cleanup only show under the sidebar's Cleanup tab
+  const live = sessions.filter((s) => !s.user.cleanup);
+  const attention = live.filter(needsAttention);
+  const working = live.filter(isWorking);
+  const recent = [...live].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
   const firstRun = sessions.length === 0;
 
   const summary = firstRun

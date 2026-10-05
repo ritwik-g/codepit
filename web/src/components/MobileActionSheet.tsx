@@ -61,7 +61,9 @@ export const MobileActionSheet: React.FC<{
   onTogglePriority: () => void;
   onTogglePin: () => void;
   onToggleCleanup: () => void;
+  /** Opens the snooze choices, or wakes a snoozed session. */
   onToggleSnooze: () => void;
+  onEditTags: () => void;
   onOpenSubscriptionsModal?: () => void;
   onOpenMcp?: () => void;
   onStopAgent: () => void;
@@ -103,12 +105,21 @@ export const MobileActionSheet: React.FC<{
               checked={Boolean(session.user.pinned)}
               onChange={p.onTogglePin}
             />
-            <ToggleRow
+            <ActionRow
               icon="moon"
-              label="Snooze for 1 hour"
-              description="Move it to the bottom of the list until later"
-              checked={p.isSnoozed}
-              onChange={p.onToggleSnooze}
+              label={p.isSnoozed ? 'Wake session' : 'Snooze…'}
+              description={
+                p.isSnoozed && session.user.snoozedUntil
+                  ? `Snoozed until ${new Date(session.user.snoozedUntil).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`
+                  : 'Move it to the bottom of the list until later'
+              }
+              onClick={then(p.onToggleSnooze)}
+            />
+            <ActionRow
+              icon="hash"
+              label="Tags"
+              description={session.user.tags?.length ? session.user.tags.map((t) => `#${t}`).join(' ') : 'Label this session to find it later'}
+              onClick={then(p.onEditTags)}
             />
             <ToggleRow
               icon="check"

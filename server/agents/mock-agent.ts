@@ -104,6 +104,16 @@ class MockAcpAgent {
       return { stopReason: 'end_turn' as const };
     }
 
+    // "name this session <title>" names the conversation the way Claude and Codex do: a
+    // session_info_update carrying a title
+    const naming = /\bname this session (.+)$/i.exec(promptText.trim());
+    if (naming) {
+      const send = (update: Record<string, unknown>) => cx.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update });
+      await send({ sessionUpdate: 'session_info_update', title: naming[1].trim() });
+      await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Named it.' } });
+      return { stopReason: 'end_turn' as const };
+    }
+
     // "rfd subagent" delegates the way ACP's subagents RFD says: a subagent_update upsert naming the
     // child session, its work on that session, then an idle state with usage. The child keeps its id
     // across prompts, so asking again delegates to the same subagent.

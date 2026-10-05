@@ -107,6 +107,8 @@ export interface ClientHostEvents {
   elicitationResolved: (requestId: string, outcome: ElicitationOutcome) => void;
   turnCompleted: (stopReason: string) => void;
   promptSuggestion: (suggestion: string) => void;
+  /** The agent named the conversation (ACP session_info_update.title); null clears its name. */
+  agentTitle: (title: string | null) => void;
   asyncTask: (update: AsyncTaskUpdate) => void;
   availableCommands: (commands: AgentCommand[]) => void;
   compaction: (update: CompactionEvent) => void;
@@ -594,6 +596,10 @@ export class AcpClientHost extends EventEmitter {
           const suggestion = (update._meta as any)?.prompt_suggestion;
           if (suggestion && typeof suggestion === 'string') {
             this.emit('promptSuggestion', suggestion);
+          }
+          // Claude generates a title after the first turns; Codex sends its thread name
+          if ('title' in update && (update.title === null || typeof update.title === 'string')) {
+            if (!this.sessionId || ctx.params?.sessionId === this.sessionId) this.emit('agentTitle', update.title?.trim() || null);
           }
           break;
         }

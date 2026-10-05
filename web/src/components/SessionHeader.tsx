@@ -6,7 +6,7 @@ import { Menu, type MenuItem } from './Menu';
 import { VendorIcon } from './VendorLogos';
 import { cx, formatTokens, sessionStateView } from './sessionMeta';
 
-export type WorkspaceTab = 'conversation' | 'agentSessions' | 'agents' | 'terminal' | 'usage';
+export type WorkspaceTab = 'conversation' | 'agentSessions' | 'agents' | 'terminal' | 'usage' | 'tags';
 
 /** The session title, editable in place. Enter saves, Esc reverts. */
 const TitleInput: React.FC<{
@@ -302,7 +302,8 @@ export const SessionTabsBar: React.FC<{
   agentTasks?: { total: number; running: number };
   /** How many agent sessions this conversation has had. */
   agentSessionCount?: number;
-}> = ({ activeTab, onChange, shellCommandCount, contextTokens, contextWindow, estimatedCost, agentTasks, agentSessionCount }) => {
+  tagCount?: number;
+}> = ({ activeTab, onChange, shellCommandCount, contextTokens, contextWindow, estimatedCost, agentTasks, agentSessionCount, tagCount }) => {
   const percent = Math.min(100, Math.round((contextTokens / contextWindow) * 100));
   const tone: Tone = percent > 80 ? 'danger' : percent > 50 ? 'warn' : 'accent';
   return (
@@ -330,6 +331,7 @@ export const SessionTabsBar: React.FC<{
           },
           { id: 'terminal', label: 'Terminal', count: shellCommandCount },
           { id: 'usage', label: 'Usage' },
+          { id: 'tags', label: 'Tags', count: tagCount || undefined },
         ]}
       />
       <button

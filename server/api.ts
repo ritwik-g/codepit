@@ -29,7 +29,7 @@ import { mcpRouter } from './mcp/routes.js';
 import { advertisedOptions, effortChoicesFor, effortError, isEffortValue, isFavoriteList, markNewModels, readFavoriteModels, writeFavoriteModels } from './acp/agent-options.js';
 import { refreshCodexRateLimitsAsync } from './codex-limits.js';
 import { readWorkflowAgent, readWorkflowRun } from './acp/workflow-run.js';
-import type { AgentTask } from './types.js';
+import type { AgentTask, UserAnnotations } from './types.js';
 
 export const apiRouter = Router();
 
@@ -497,13 +497,77 @@ apiRouter.put('/sessions/:id/fast-mode', async (req: Request, res: Response) => 
 
 // 9. Update user annotations (priority, pin, snooze, tags, cleanup)
 apiRouter.patch('/sessions/:id/annotations', (req: Request, res: Response) => {
-  const updated = sessionManager.updateAnnotations(sid(req), req.body);
+  const patch = parseAnnotations(req.body);
+  if (typeof patch === 'string') {
+    res.status(400).json({ error: patch });
+    return;
+  }
+  const updated = sessionManager.updateAnnotations(sid(req), patch);
   if (!updated) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
   res.json({ session: updated });
 });
+
+// The user has the session open: its finished turns are seen
+apiRouter.post('/sessions/:id/seen', (req: Request, res: Response) => {
+  if (!sessionManager.markSeen(sid(req))) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+const MAX_TAGS = 12;
+const MAX_TAG_LENGTH = 32;
+
+/** Keeps only the known annotation fields, each of the right type; a string is the reason it was refused. */
+export function parseAnnotations(body: unknown): Partial<UserAnnotations> | string {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Expected an object';
+  const b = body as Record<string, unknown>;
+  const out: Partial<UserAnnotations> = {};
+  if ('priority' in b) {
+    if (b.priority !== null && b.priority !== 'p0' && b.priority !== 'p1' && b.priority !== 'p2') return 'priority must be p0, p1, p2 or null';
+    out.priority = b.priority;
+  }
+  for (const key of ['pinned', 'cleanup', 'autoApprove'] as const) {
+    if (key in b) {
+      if (typeof b[key] !== 'boolean') return `${key} must be true or false`;
+      out[key] = b[key] as boolean;
+    }
+  }
+  if ('snoozedUntil' in b) {
+    if (b.snoozedUntil !== null && !(typeof b.snoozedUntil === 'number' && Number.isFinite(b.snoozedUntil))) return 'snoozedUntil must be a time or null';
+    out.snoozedUntil = b.snoozedUntil as number | null;
+  }
+  if ('note' in b) {
+    if (typeof b.note !== 'string') return 'note must be text';
+    out.note = b.note.slice(0, 2000);
+  }
+  if ('tags' in b) {
+    if (!Array.isArray(b.tags) || b.tags.some((t) => typeof t !== 'string')) return 'tags must be a list of text';
+    const tags: string[] = [];
+    for (const raw of b.tags as string[]) {
+      const tag = normalizeTag(raw);
+      if (tag && !tags.includes(tag)) tags.push(tag);
+    }
+    if (tags.length > MAX_TAGS) return `At most ${MAX_TAGS} tags`;
+    out.tags = tags;
+  }
+  return out;
+}
+
+/** "#Infra Work " -> "infra-work": lower case, no leading #, spaces become dashes. */
+export function normalizeTag(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^#+/, '')
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^\p{L}\p{N}_./-]/gu, '')
+    .slice(0, MAX_TAG_LENGTH);
+}
 
 // 10. Rename session title
 apiRouter.patch('/sessions/:id/title', (req: Request, res: Response) => {
