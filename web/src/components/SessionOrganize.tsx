@@ -10,7 +10,7 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 
 /** The next `hour`:00 on the given weekday offset from today (0 = today), local time. */
-function atHour(daysAhead: number, hour: number): number {
+export function atHour(daysAhead: number, hour: number): number {
   const d = new Date();
   d.setDate(d.getDate() + daysAhead);
   d.setHours(hour, 0, 0, 0);
@@ -33,11 +33,11 @@ export function snoozePresets(): Array<{ id: string; label: string; until: numbe
   ];
 }
 
-const whenLabel = (ts: number) =>
+export const whenLabel = (ts: number) =>
   new Date(ts).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' });
 
 /** "2026-10-05T18:30" in local time, for a datetime-local input. */
-function toLocalInput(ts: number): string {
+export function toLocalInput(ts: number): string {
   const d = new Date(ts - new Date(ts).getTimezoneOffset() * MIN);
   return d.toISOString().slice(0, 16);
 }

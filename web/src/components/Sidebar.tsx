@@ -24,9 +24,15 @@ export interface SessionStatus {
 /** Label and tone for a session's state, per the table in DESIGN.md. */
 export function sessionStatus(
   s: Pick<SessionSummary, 'state' | 'isAgentRunning' | 'compacting' | 'workingInBackground'> &
-    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore'>>
+    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume'>>
 ): SessionStatus {
   if (s.compacting && s.state !== 'blocked') return { label: 'Compacting', tone: 'accent', pulse: true };
+  // Waiting to send a message later: after the usage limit resets, or when a pause ends
+  const resume = s.scheduledResume;
+  if (resume && s.state !== 'blocked' && s.state !== 'working') {
+    if (resume.armed && resume.at) return { label: `Resumes ${shortTime(resume.at)}`, tone: 'info', pulse: false };
+    if (resume.reason === 'limit') return { label: 'Usage limit reached', tone: 'warn', pulse: false };
+  }
   // Its agent was running when CodePit closed: offered back with Restore
   if (s.restore && s.isAgentRunning === false && s.state !== 'blocked') return { label: 'Was running', tone: 'warn', pulse: false };
   if (s.isAgentRunning === false && s.state !== 'crashed' && s.state !== 'blocked') {
@@ -54,7 +60,14 @@ export function sessionStatus(
 }
 
 export const needsAttention = (s: SessionSummary) =>
-  s.state === 'blocked' || (s.state === 'needs_you' && !s.workingInBackground) || s.state === 'crashed';
+  s.state === 'blocked' || (s.state === 'needs_you' && !s.workingInBackground && !s.scheduledResume?.armed) || s.state === 'crashed';
+
+/** "3:41 PM" today, "Thu 9:00 AM" on another day. */
+export function shortTime(ts: number): string {
+  const d = new Date(ts);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return d.toLocaleString(undefined, sameDay ? { hour: 'numeric', minute: '2-digit' } : { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+}
 
 /** A finished turn the user has not looked at since, while nothing else runs. */
 export function isUnseen(s: SessionSummary): boolean {

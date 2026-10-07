@@ -919,6 +919,8 @@ export class AcpClientHost extends EventEmitter {
       if (turn === this.turnSeq) this.emit('turnCompleted', stopReason);
       return { stopReason };
     } catch (err: any) {
+      // As on success: updates sent just before the failure (e.g. Claude's rate-limit event) land first
+      await settleNotifications();
       // A turn abandoned by cancel() or ended by shutdown() reports nothing: its owner already moved on
       if (turn === this.turnSeq && !this.isShutdown) {
         this.emitError(err);

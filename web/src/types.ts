@@ -314,6 +314,25 @@ export interface RestoreOffer {
   error?: string;
 }
 
+/** What happens when Claude stops a turn on its 5-hour usage limit. */
+export type LimitResumeMode = 'off' | 'ask' | 'auto';
+
+/** A message the session sends by itself later: after the 5-hour limit resets, or when a pause ends. */
+export interface ScheduledResume {
+  reason: 'limit' | 'manual';
+  /** When it is sent. Absent only for a limit whose reset time is not known. */
+  at?: number;
+  /** False while it waits for the user to agree (limit, "Ask"). */
+  armed: boolean;
+  prompt: string;
+  createdAt: number;
+  /** limit: what Claude said. */
+  limitMessage?: string;
+  /** limit: when the 5-hour window resets. */
+  resetsAt?: number;
+  note?: string;
+}
+
 export interface QueuedPrompt {
   id: string;
   text: string;
@@ -416,6 +435,7 @@ export interface AcpSession {
   lastTurnEndedAt?: number;
   /** When the user last had this session open. */
   seenAt?: number;
+  scheduledResume?: ScheduledResume | null;
 }
 
 export interface SessionSummary {
@@ -460,11 +480,14 @@ export interface SessionSummary {
   seenAt?: number;
   /** Estimated: when the agent's prompt cache lapses (Claude only; no agent reports it). */
   cacheExpiresAt?: number;
+  scheduledResume?: ScheduledResume | null;
 }
 
 export interface VendorRateLimitWindow {
   utilization: number;
   resetsAt?: string | null;
+  /** The same reset as an epoch time, when it could be read. */
+  resetsAtMs?: number;
 }
 
 export interface VendorRateLimits {

@@ -5,6 +5,7 @@ import type { VendorSubscriptionInfo, StoredCredentials, UsageReport } from '../
 import { VendorIcon } from './VendorLogos';
 import { RateLimitList, hasRateLimits } from './UsageTab';
 import { formatCost, formatTokens, levelTone } from '../pricing';
+import { LimitResumeSetting } from './ResumeLater';
 import {
   Badge,
   Button,
@@ -344,6 +345,7 @@ const VendorCard: React.FC<{
             </div>
           )}
           {refreshError && <div className="acct-inline-error">Couldn't refresh limits: {refreshError}</div>}
+          {spec.key === 'anthropic' && <LimitResumeSetting />}
         </div>
       )}
 

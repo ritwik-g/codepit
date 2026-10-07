@@ -334,6 +334,8 @@ export type ContextTransferMode = 'compact' | 'full' | 'none';
 export interface RateLimitWindow {
   utilization: number;
   resetsAt?: string | null;
+  /** The same reset as an epoch time, when it is known exactly. */
+  resetsAtMs?: number;
 }
 
 export interface SessionRateLimits {
@@ -465,6 +467,12 @@ export interface AcpSession {
   lastTurnEndedAt?: number;
   /** When the user last had this session open; a turn that ended after it is unseen. */
   seenAt?: number;
+  /** A message to send later: after the usage limit resets, or when a pause ends. */
+  scheduledResume?: ScheduledResume | null;
+  /** Limit resumes in a row that hit the limit again soon after; reset by a turn that ends cleanly. */
+  limitResumeStreak?: number;
+  /** When the last limit resume was sent, until its turn ends. */
+  limitResumeSentAt?: number;
 }
 
 /** An agent process this run of CodePit started and has not stopped: on disk while it runs, so a crash leaves it behind. */
@@ -489,6 +497,31 @@ export interface RestoreOffer {
   continues: boolean;
   /** Why the last restore failed; the offer stays so it can be retried or dismissed. */
   error?: string;
+}
+
+/** What happens when Claude stops a turn on its 5-hour usage limit. */
+export type LimitResumeMode = 'off' | 'ask' | 'auto';
+
+/**
+ * A message the session sends by itself later: after Claude's 5-hour limit resets, or at a
+ * time the user picked when pausing it. Cleared when it is sent, cancelled, or the user
+ * sends a message of their own.
+ */
+export interface ScheduledResume {
+  reason: 'limit' | 'manual';
+  /** When it is sent. Absent only for a limit whose reset time is not known. */
+  at?: number;
+  /** False while it waits for the user to agree (limit, "Ask"): nothing is sent until then. */
+  armed: boolean;
+  /** What is sent. */
+  prompt: string;
+  createdAt: number;
+  /** limit: what Claude said, e.g. "You've hit your session limit · resets 3:40pm". */
+  limitMessage?: string;
+  /** limit: when the 5-hour window resets. */
+  resetsAt?: number;
+  /** Why the last attempt to send it failed, or why it was not armed. */
+  note?: string;
 }
 
 export interface QueuedPrompt {
@@ -545,6 +578,7 @@ export interface SessionSummary {
    * agent reports it.
    */
   cacheExpiresAt?: number;
+  scheduledResume?: ScheduledResume | null;
 }
 
 // ------------------------------------------------------------------ MCP

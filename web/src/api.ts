@@ -11,6 +11,8 @@ import type {
   McpServerInput,
   MemoryGraph,
   QueuedPrompt,
+  LimitResumeMode,
+  ScheduledResume,
   FileAttachment,
   SessionCostDetail,
   SessionSummary,
@@ -137,6 +139,18 @@ export const api = {
     request<{ session: AcpSession }>(`/api/sessions/${id}/restore`, {
       method: 'POST',
     }),
+  // Resume later: after the usage limit resets, or a pause the user set
+  scheduleResume: (id: string, at: number, prompt?: string) =>
+    request<{ scheduledResume: ScheduledResume | null }>(`/api/sessions/${id}/scheduled-resume`, {
+      method: 'PUT',
+      body: JSON.stringify({ at, prompt }),
+    }),
+  cancelScheduledResume: (id: string) =>
+    request<{ scheduledResume: null }>(`/api/sessions/${id}/scheduled-resume`, { method: 'DELETE' }),
+  resumeNow: (id: string) => request<{ ok: boolean }>(`/api/sessions/${id}/scheduled-resume/now`, { method: 'POST' }),
+  getLimitResumeMode: () => request<{ mode: LimitResumeMode }>('/api/settings/limit-resume'),
+  setLimitResumeMode: (mode: LimitResumeMode) =>
+    request<{ mode: LimitResumeMode }>('/api/settings/limit-resume', { method: 'PUT', body: JSON.stringify({ mode }) }),
   dismissRestore: (id: string) =>
     request<{ ok: boolean }>(`/api/sessions/${id}/restore`, {
       method: 'DELETE',

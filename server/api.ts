@@ -7,8 +7,9 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 import { hasAgent, listAgents } from './agents/registry.js';
-import { AgentNotRunningError, ElicitationAnswerError, InvalidOptionError, NothingToCompactError, QueuedPromptNotFoundError, RestoreError, isSafeImportedSessionId, listImportableAgentSessions, sessionManager } from './acp/session-mgr.js';
+import { AgentNotRunningError, ElicitationAnswerError, InvalidOptionError, NothingToCompactError, QueuedPromptNotFoundError, RestoreError, ScheduleError, isSafeImportedSessionId, listImportableAgentSessions, sessionManager } from './acp/session-mgr.js';
 import { parseAutoCompact } from './compaction.js';
+import { isLimitResumeMode, parseScheduleRequest, readLimitResumeMode } from './limit-resume.js';
 import { TurnInFlightError } from './acp/client-host.js';
 import { searchSessions } from './search.js';
 import { getGitInfo } from './git.js';
@@ -69,6 +70,20 @@ apiRouter.put('/settings/favorite-models', (req: Request, res: Response) => {
   }
   writeFavoriteModels(favorites);
   res.json({ favorites: readFavoriteModels() });
+});
+
+// What to do when Claude hits its 5-hour usage limit: 'off' | 'ask' | 'auto'
+apiRouter.get('/settings/limit-resume', (_req: Request, res: Response) => {
+  res.json({ mode: readLimitResumeMode() });
+});
+
+apiRouter.put('/settings/limit-resume', (req: Request, res: Response) => {
+  const mode = req.body?.mode;
+  if (!isLimitResumeMode(mode)) {
+    res.status(400).json({ error: "mode must be 'off', 'ask' or 'auto'" });
+    return;
+  }
+  res.json({ mode: sessionManager.setLimitResumeMode(mode) });
 });
 
 // 2. List attention-ranked sessions
@@ -328,6 +343,43 @@ apiRouter.delete('/sessions/:id/restore', (req: Request, res: Response) => {
     return;
   }
   res.json({ ok: true });
+});
+
+// Resume later: { at, prompt? } pauses a running turn and sends prompt at `at`
+function scheduleFailed(res: Response, err: any) {
+  res.status(err instanceof ScheduleError ? err.status : 500).json({ error: err.message });
+}
+
+apiRouter.put('/sessions/:id/scheduled-resume', async (req: Request, res: Response) => {
+  const parsed = parseScheduleRequest(req.body);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  try {
+    const session = await sessionManager.scheduleResume(sid(req), parsed.at, parsed.prompt);
+    res.json({ scheduledResume: session.scheduledResume ?? null });
+  } catch (err: any) {
+    scheduleFailed(res, err);
+  }
+});
+
+apiRouter.delete('/sessions/:id/scheduled-resume', (req: Request, res: Response) => {
+  try {
+    sessionManager.cancelScheduledResume(sid(req));
+    res.json({ scheduledResume: null });
+  } catch (err: any) {
+    scheduleFailed(res, err);
+  }
+});
+
+apiRouter.post('/sessions/:id/scheduled-resume/now', (req: Request, res: Response) => {
+  try {
+    sessionManager.resumeNow(sid(req));
+    res.json({ ok: true });
+  } catch (err: any) {
+    scheduleFailed(res, err);
+  }
 });
 
 // 7. Resolve permission

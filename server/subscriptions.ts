@@ -7,10 +7,13 @@ import { store } from './store.js';
 import type { AcpSession } from './types.js';
 import { getCodexRateLimits } from './codex-limits.js';
 import { contextWindowHint } from './acp/agent-options.js';
+import { parseResetTime } from './limit-resume.js';
 
 export interface VendorRateLimitWindow {
   utilization: number;
   resetsAt?: string | null;
+  /** The same reset as an epoch time, when it could be read. */
+  resetsAtMs?: number;
 }
 
 export interface VendorRateLimits {
@@ -259,9 +262,11 @@ export function parseClaudeUsageOutput(text: string): VendorRateLimits {
 
     const sessionMatch = trimmed.match(/Current session:\s*(\d+)%\s*used(?:[^\w]+resets\s+(.+))?/i);
     if (sessionMatch) {
+      const resetsAtMs = sessionMatch[2] ? parseResetTime(sessionMatch[2]) : undefined;
       result.fiveHour = {
         utilization: parseInt(sessionMatch[1], 10),
         resetsAt: sessionMatch[2] ? sessionMatch[2].trim() : null,
+        ...(resetsAtMs ? { resetsAtMs } : {}),
       };
       continue;
     }
@@ -331,9 +336,11 @@ export function updateClaudeRateLimitsFromSdk(info: any): void {
     : undefined;
 
   let resetsFormatted: string | null = null;
+  let resetsAtMs: number | undefined;
   if (info.resetsAt) {
     const ts = typeof info.resetsAt === 'number' ? (info.resetsAt > 1e11 ? info.resetsAt : info.resetsAt * 1000) : Date.parse(info.resetsAt);
     resetsFormatted = Number.isFinite(ts) ? formatResetTime(ts) : String(info.resetsAt);
+    if (Number.isFinite(ts)) resetsAtMs = ts;
   }
 
   let changed = false;
@@ -342,9 +349,11 @@ export function updateClaudeRateLimitsFromSdk(info: any): void {
     const key = type === 'five_hour' ? 'fiveHour' : 'weeklyAll';
     const prev = cachedClaudeRateLimits[key];
     if (util !== undefined || prev) {
+      const ms = resetsAtMs ?? (resetsFormatted ? undefined : prev?.resetsAtMs);
       cachedClaudeRateLimits[key] = {
         utilization: util ?? prev!.utilization,
         resetsAt: resetsFormatted || prev?.resetsAt,
+        ...(ms ? { resetsAtMs: ms } : {}),
       };
       changed = util !== undefined && util !== prev?.utilization;
     }

@@ -63,6 +63,8 @@ export const MobileActionSheet: React.FC<{
   onToggleCleanup: () => void;
   /** Opens the snooze choices, or wakes a snoozed session. */
   onToggleSnooze: () => void;
+  /** Opens the choice of when the session resumes (pausing a running turn). */
+  onResumeLater: () => void;
   onEditTags: () => void;
   onOpenSubscriptionsModal?: () => void;
   onOpenMcp?: () => void;
@@ -114,6 +116,12 @@ export const MobileActionSheet: React.FC<{
                   : 'Move it to the bottom of the list until later'
               }
               onClick={then(p.onToggleSnooze)}
+            />
+            <ActionRow
+              icon="pause"
+              label={session.state === 'working' ? 'Pause and resume later…' : 'Resume later…'}
+              description="Send a message by itself at a time you pick"
+              onClick={then(p.onResumeLater)}
             />
             <ActionRow
               icon="hash"

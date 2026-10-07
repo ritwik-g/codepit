@@ -189,6 +189,14 @@ async function main() {
           })
         : null;
       const send = (update: Record<string, unknown>) => ctx.client.notify(acp.methods.client.session.update, { sessionId, update });
+      // Like Claude stopping on a usage limit: "hit-limit:<reset ms>" is the 5-hour one, with
+      // its rate-limit event; "hit-weekly" the weekly one, with no event
+      const limit = /hit-limit:(\d+)/.exec(text);
+      if (limit) {
+        await send({ sessionUpdate: 'usage_update', used: 1000, size: 200_000, _meta: { '_claude/rateLimit': { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Number(limit[1]) } } });
+        throw acp.RequestError.internalError(undefined, "You've hit your session limit · resets 3:40pm (UTC)");
+      }
+      if (text.includes('hit-weekly')) throw acp.RequestError.internalError(undefined, "You've hit your weekly limit · resets Oct 9, 10am (UTC)");
       await send({
         sessionUpdate: 'agent_message_chunk',
         content: {

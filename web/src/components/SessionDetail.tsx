@@ -24,6 +24,7 @@ import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
 import { SnoozeModal, TagsPanel } from './SessionOrganize';
 import { RestoreSessionBanner, isRestorable } from './RestorePrompt';
+import { ResumeAtModal, ResumeBanner } from './ResumeLater';
 
 // Other areas import these from here.
 export { STATE_LABEL, formatTime, nextPriority } from './sessionMeta';
@@ -64,6 +65,9 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   const restorable = Boolean(summary && isRestorable(summary));
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [showSnooze, setShowSnooze] = useState(false);
+  const [showResumeAt, setShowResumeAt] = useState(false);
+  // Read from the summaries too: they always carry it, null once it is sent or cancelled
+  const scheduledResume = summary?.scheduledResume ?? null;
   const [promptText, setPromptText] = useState('');
   const [rollingBack, setRollingBack] = useState(false);
   const [requestingCompaction, setRequestingCompaction] = useState(false);
@@ -338,6 +342,11 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
       disabled: !canCompact || compacting,
     },
     { label: isSnoozed ? 'Wake session' : 'Snooze…', icon: 'moon', onSelect: handleToggleSnooze },
+    {
+      label: scheduledResume?.armed ? 'Change resume time…' : session.state === 'working' ? 'Pause and resume later…' : 'Resume later…',
+      icon: 'pause',
+      onSelect: () => setShowResumeAt(true),
+    },
     { label: session.user.tags?.length ? 'Edit tags' : 'Add tags', icon: 'hash', onSelect: () => changeTab('tags') },
     { label: session.user.cleanup ? 'Unmark cleanup' : 'Mark for cleanup', icon: 'check', onSelect: handleToggleCleanup, hint: 'c' },
     'divider',
@@ -453,6 +462,8 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
               elicitation={session.pendingElicitation}
               onAnswered={onRefresh}
             />
+          ) : scheduledResume && session.state !== 'working' ? (
+            <ResumeBanner key={session.id} sessionId={session.id} resume={scheduledResume} onPickTime={() => setShowResumeAt(true)} />
           ) : (
             restorable &&
             summary && <RestoreSessionBanner key={session.id} summary={summary} queuedCount={session.queuedPrompts?.length ?? 0} />
@@ -462,6 +473,16 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
 
       {showSnooze && (
         <SnoozeModal snoozedUntil={session.user.snoozedUntil} onSnooze={(until) => updateAnnotations({ snoozedUntil: until })} onClose={() => setShowSnooze(false)} />
+      )}
+
+      {showResumeAt && (
+        <ResumeAtModal
+          sessionId={session.id}
+          working={session.state === 'working'}
+          current={scheduledResume}
+          fiveHourResetsAt={session.agentId === 'claude' ? session.rateLimits?.fiveHour?.resetsAtMs : undefined}
+          onClose={() => setShowResumeAt(false)}
+        />
       )}
 
       {showMobileActions && (
@@ -484,6 +505,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
           onTogglePin={handleTogglePin}
           onToggleCleanup={handleToggleCleanup}
           onToggleSnooze={handleToggleSnooze}
+          onResumeLater={() => setShowResumeAt(true)}
           onEditTags={() => changeTab('tags')}
           onOpenSubscriptionsModal={onOpenSubscriptionsModal}
           onOpenMcp={onOpenMcp}
