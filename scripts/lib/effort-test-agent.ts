@@ -181,6 +181,13 @@ async function main() {
       const text = (prompt as any[]).map((b) => b.text || '').join('\n');
       s.prompts.push(text);
       persist(sessionId, s);
+      // Like the real adapters, a slow turn takes a steered message from the moment it starts
+      const steeredMessage = text.includes('slow-turn')
+        ? new Promise<string>((resolve) => {
+            steerWaiters.set(sessionId, resolve);
+            setTimeout(() => resolve(''), 5_000);
+          })
+        : null;
       const send = (update: Record<string, unknown>) => ctx.client.notify(acp.methods.client.session.update, { sessionId, update });
       await send({
         sessionUpdate: 'agent_message_chunk',
@@ -192,11 +199,8 @@ async function main() {
       await send({ sessionUpdate: 'usage_update', used: 1000 * s.prompts.length, size: s.model.endsWith('[1m]') ? 1_000_000 : 200_000 });
       // A turn too far along to take a message: steering is refused as if it had ended
       if (text.includes('slow-refuse')) await new Promise((r) => setTimeout(r, 600));
-      if (text.includes('slow-turn')) {
-        const steered = await new Promise<string>((resolve) => {
-          steerWaiters.set(sessionId, resolve);
-          setTimeout(() => resolve(''), 5_000);
-        });
+      if (steeredMessage) {
+        const steered = await steeredMessage;
         steerWaiters.delete(sessionId);
         if (cancelled.delete(sessionId)) return { stopReason: 'cancelled' };
         await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: steered ? `steered: ${steered}` : 'no steer' } });

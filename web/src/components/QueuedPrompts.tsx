@@ -16,6 +16,8 @@ export const QueuedPrompts: React.FC<{ session: AcpSession; onRefresh: () => voi
   const paused = session.state !== 'working' && session.state !== 'blocked' && !compacting;
   // The agent takes a message into the running turn, so "send now" need not stop it
   const steer = !paused && !compacting && Boolean(session.canSteer) && session.isAgentRunning !== false;
+  // The agent is still starting: "send now" waits to see whether it can take the message mid-turn
+  const starting = !paused && !compacting && session.isAgentRunning === false;
 
   // One action at a time: a double click on "Send now" must not send the message twice
   const pending = useRef(false);
@@ -51,7 +53,7 @@ export const QueuedPrompts: React.FC<{ session: AcpSession; onRefresh: () => voi
       </div>
       <ol className="ws-queue-list">
         {queue.map((q) => (
-          <QueuedRow key={q.id} sessionId={session.id} item={q} working={!paused} steer={steer} act={act} />
+          <QueuedRow key={q.id} sessionId={session.id} item={q} working={!paused} steer={steer} starting={starting} act={act} />
         ))}
       </ol>
     </section>
@@ -63,8 +65,9 @@ const QueuedRow: React.FC<{
   item: QueuedPrompt;
   working: boolean;
   steer: boolean;
+  starting: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
-}> = ({ sessionId, item, working, steer, act }) => {
+}> = ({ sessionId, item, working, steer, starting, act }) => {
   const [draft, setDraft] = useState<string | null>(null);
   const files = item.attachments?.length || 0;
 
@@ -110,7 +113,15 @@ const QueuedRow: React.FC<{
         <IconButton
           icon="send"
           size="sm"
-          label={steer ? 'Send this now, into the current turn' : working ? 'Stop the current turn and send this now' : 'Send this now'}
+          label={
+            steer
+              ? 'Send this now, into the current turn'
+              : starting
+                ? 'Send this now, into the current turn once the agent has started, or stop it if the agent cannot take it'
+                : working
+                  ? 'Stop the current turn and send this now'
+                  : 'Send this now'
+          }
           onClick={() => act(() => api.sendQueuedNow(sessionId, item.id))}
         />
         <IconButton icon="x" size="sm" label="Remove from queue" onClick={() => act(() => api.removeQueuedPrompt(sessionId, item.id))} />

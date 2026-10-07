@@ -159,6 +159,8 @@ export function reconcileEffort(s: AcpSession, options: AgentOptions): TurnMessa
 
 // A 'working' turn with no agent, permission or terminal activity for this long is treated as hung
 const STALE_TURN_MS = 10 * 60_000;
+// How long "Send now" waits for a starting agent to begin the turn before stopping it instead
+const SEND_NOW_WAIT_MS = 60_000;
 
 export class QueuedPromptNotFoundError extends Error {
   constructor() {
@@ -211,6 +213,8 @@ export class SessionManager extends EventEmitter {
   private agentCompactions = new Map<string, string>();
   // "Compact when finished" held back by background work: the stop reason of the turn it follows
   private autoCompactAfterBackground = new Map<string, string | undefined>();
+  // Queued messages whose "Send now" is waiting for the turn to reach the agent
+  private sendNowWaiting = new Set<string>();
   /** Whether the sidebar was last told a session is working in the background. */
   private inBackground = new Map<string, boolean>();
   /** Sessions a restore is starting the agent of now, and that restore. */
@@ -1331,9 +1335,23 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Send this queued message now. An agent that takes messages during a turn gets it added
-   * to the running turn; otherwise the running turn, if any, is stopped first.
+   * to the running turn; otherwise the running turn, if any, is stopped first. A turn not yet
+   * handed to the agent (it is still starting) is waited for, so it can be steered instead.
    */
   async sendQueuedNow(sessionId: string, queueId: string): Promise<void> {
+    this.requireQueued(sessionId, queueId);
+    if (this.turnStarting(sessionId)) {
+      // A second click while waiting would steer the same message twice
+      if (this.sendNowWaiting.has(queueId)) return;
+      this.sendNowWaiting.add(queueId);
+      try {
+        await this.untilTurnStarted(sessionId);
+      } finally {
+        this.sendNowWaiting.delete(queueId);
+      }
+      // Sent meanwhile as the next message after a turn that ended, or removed
+      if (!store.get(sessionId)?.queuedPrompts?.some((q) => q.id === queueId)) return;
+    }
     const session = this.requireQueued(sessionId, queueId);
     const item = session.queuedPrompts!.find((q) => q.id === queueId)!;
     if (this.canSteer(sessionId)) {
@@ -1352,6 +1370,24 @@ export class SessionManager extends EventEmitter {
   private canSteer(sessionId: string): boolean {
     const host = this.activeHosts.get(sessionId);
     return Boolean(host?.supportsSteering && host.isTurnInFlight && this.activePrompts.has(sessionId) && !this.compactionRuns.has(sessionId));
+  }
+
+  /**
+   * A prompt owns the session but the agent is not running it yet (e.g. the agent is still
+   * starting), and the agent may turn out to take messages mid-turn. A compaction is never one.
+   */
+  private turnStarting(sessionId: string): boolean {
+    if (!this.activePrompts.has(sessionId) || this.compactionRuns.has(sessionId)) return false;
+    const host = this.activeHosts.get(sessionId);
+    return !host || (host.supportsSteering && !host.isTurnInFlight);
+  }
+
+  /** Wait until the starting turn is running in the agent, has ended, or SEND_NOW_WAIT_MS has passed. */
+  private async untilTurnStarted(sessionId: string): Promise<void> {
+    const deadline = Date.now() + SEND_NOW_WAIT_MS;
+    while (this.turnStarting(sessionId) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
 
   private async steerQueued(sessionId: string, item: QueuedPrompt): Promise<void> {

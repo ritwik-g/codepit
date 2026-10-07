@@ -357,6 +357,23 @@ async function liveTests(): Promise<void> {
   await waitForIdle(id);
   check('sent as the next prompt once the turn ended', sentAfter() && !sessionManager.getSession(id)!.queuedPrompts?.length);
 
+  console.log('9c2. Send now while the agent is still starting waits for the turn and steers into it');
+  const cold = await sessionManager.createSession({ agentId: 'efforttest', cwd, model: 'big' });
+  // A new session starts its agent; a message to a stopped one starts it again
+  await sessionManager.stopSessionAgent(cold.id);
+  const coldTurn = sessionManager.sendPrompt(cold.id, 'slow-turn please');
+  await sessionManager.queuePrompt(cold.id, 'while starting');
+  check('queued before the agent was running', sessionManager.getSession(cold.id)!.isAgentRunning === false);
+  const coldItem = sessionManager.getSession(cold.id)!.queuedPrompts![0];
+  await Promise.all([sessionManager.sendQueuedNow(cold.id, coldItem.id), sessionManager.sendQueuedNow(cold.id, coldItem.id)]);
+  await coldTurn;
+  await waitForIdle(cold.id);
+  const coldAfter = sessionManager.getSession(cold.id)!;
+  check('the queue is empty', !coldAfter.queuedPrompts?.length, coldAfter.queuedPrompts);
+  check('sent once, not twice', coldAfter.turns.filter((t) => t.role === 'user' && t.content === 'while starting').length === 1);
+  check('steered into the starting turn, not stopping it', coldAfter.turns.some((t) => t.role === 'agent' && t.content?.includes('steered: while starting')), coldAfter.turns.map((t) => [t.role, t.content?.slice(0, 40)]));
+  await sessionManager.stopSessionAgent(cold.id);
+
   console.log('9d. Approval mode, fast mode and the agent\'s commands');
   const live = sessionManager.getSession(id)!;
   check('commands reported by the agent kept on the session', live.agentCommands?.map((c) => c.name).join() === 'review,unstract:review-deep', live.agentCommands);
