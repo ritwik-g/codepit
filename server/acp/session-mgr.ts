@@ -277,7 +277,7 @@ export class SessionManager extends EventEmitter {
     const s = store.get(sessionId);
     if (!s?.agentLive) return;
     delete s.agentLive;
-    store.save(s, { touch: false });
+    store.save(s, { touch: false, now: true });
   }
 
   /**
@@ -766,7 +766,7 @@ export class SessionManager extends EventEmitter {
         current.agentLive = { since: Date.now(), pid: process.pid, started: PROCESS_STARTED, boot: bootTime() };
         // Any start (a message, Start, compact, restore) is the user taking the session back
         delete current.restore;
-        store.save(current, { touch: false });
+        store.save(current, { touch: false, now: true });
         this.emit('sessionStream', {
           sessionId: current.id,
           type: 'agentSession',
@@ -1086,7 +1086,7 @@ export class SessionManager extends EventEmitter {
       if (this.compactionRuns.has(session.id)) return;
       s.state = 'needs_you';
       s.lastTurnEndedAt = Date.now();
-      store.save(s);
+      store.save(s, { now: true });
       this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted' });
       this.emit('sessionsUpdated', this.listSessions());
 
@@ -1254,7 +1254,7 @@ export class SessionManager extends EventEmitter {
     // /clear empties Claude's own context: continuing that session later would not bring it back
     if (promptText.trim() === '/clear') dropAgentResume(session, 'Context cleared by /clear');
 
-    store.save(session);
+    store.save(session, { now: true });
     this.emit('sessionsUpdated', this.listSessions());
 
     let endedCleanly = false;
@@ -1311,7 +1311,7 @@ export class SessionManager extends EventEmitter {
           lastTurn.content = `⚠️ ${err.message || 'The agent encountered an error processing your request.'}`;
         }
         this.parkOnUsageLimit(s, err?.message);
-        store.save(s);
+        store.save(s, { now: true });
       }
     } finally {
       // ABSOLUTE GUARANTEE: The session is NEVER left in 'working' status when sendPrompt ends,
@@ -1321,7 +1321,7 @@ export class SessionManager extends EventEmitter {
       const s = owned ? store.get(sessionId) : null;
       if (s && (s.state === 'working' || s.state === 'crashed')) {
         s.state = 'needs_you';
-        store.save(s);
+        store.save(s, { now: true });
         this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted', session: s });
         this.emit('sessionsUpdated', this.listSessions());
       }

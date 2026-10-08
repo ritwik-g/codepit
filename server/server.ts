@@ -15,6 +15,7 @@ import { isPairingRequestPath, pairingRouter } from './pairing-routes.js';
 import { webManifest } from './manifest.js';
 import { resolveStartupNetwork } from './network.js';
 import { lanAccess, readStoredLanEnabled, type LanStatus } from './lan.js';
+import { store } from './store.js';
 
 export interface StartServerOptions {
   /** Built web client to serve; nothing is served outside /api when absent or missing. */
@@ -138,6 +139,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
     close: () =>
       (closing ??= (async () => {
         sessionManager.shutdown();
+        store.flush();
         await lanAccess.close();
         await new Promise<void>((resolve) => {
           server.close(() => resolve());

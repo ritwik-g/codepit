@@ -9,6 +9,8 @@ import { APP_COOKIE } from '../server/security.js';
 import { useBundledAgentRuntime } from '../server/agents/registry.js';
 import { adoptLoginShellPath } from './shell-path.js';
 import { getAppDir } from '../server/paths.js';
+import { store } from '../server/store.js';
+import { logMainExit, startMainLog } from './main-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,6 +61,7 @@ if (!fs.existsSync(app.getPath('userData')) && fs.existsSync(legacyUserData)) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  startMainLog();
   app.on('second-instance', () => {
     if (!win) return;
     if (win.isMinimized()) win.restore();
@@ -243,6 +246,7 @@ app.whenReady().then(() => {
     process.on(sig, () => {
       if (quitting) return;
       quitting = true;
+      logMainExit(sig);
       void shutdown();
     });
   }
@@ -281,6 +285,7 @@ app.on('before-quit', (e) => {
   }
 
   quitting = true;
+  logMainExit('quit');
   void shutdown();
 });
 
@@ -292,6 +297,8 @@ async function shutdown(): Promise<void> {
     console.error('[codepit] shutdown error:', err);
   } finally {
     handle = null;
+    // Agents that ended during close() saved after the server's own flush
+    store.flush();
     app.exit(0);
   }
 }
