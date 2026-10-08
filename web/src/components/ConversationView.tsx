@@ -5,7 +5,7 @@ import { AgentTurnBody } from './AgentTurn';
 import { CompactionCard } from './CompactionCard';
 import { VendorIcon } from './VendorLogos';
 import { getModelMeta } from './AgentModelPicker';
-import { cx, formatBytes, formatTime } from './sessionMeta';
+import { cx, formatBytes, formatTime, runningSubagents } from './sessionMeta';
 
 const TURN_WINDOW = 120;
 // Within this distance of the bottom the view keeps following new output.
@@ -289,6 +289,8 @@ export const ConversationView: React.FC<{
   const suggestions = useSuggestions(session, lastAgentText, hasActiveToolCalls);
   const working = session.state === 'working' && !session.pendingPermission && !session.pendingElicitation;
   const wrappingUp = Boolean(lastAgentText) && !hasActiveToolCalls;
+  // The reply is in, but the turn stays open until the subagents it started finish
+  const waitingOn = wrappingUp ? runningSubagents(session).length : 0;
 
   return (
     <div className="ws-conversation">
@@ -355,14 +357,18 @@ export const ConversationView: React.FC<{
               {working ? (
                 <div className="ws-status is-working" role="status">
                   <Spinner size={12} />
-                  <span>{wrappingUp ? 'Wrapping up…' : 'Working…'}</span>
+                  <span>{waitingOn > 0 ? `Waiting on ${waitingOn === 1 ? 'a subagent' : `${waitingOn} subagents`}…` : wrappingUp ? 'Wrapping up…' : 'Working…'}</span>
                   <span className="ws-status-actions">
                     {wrappingUp && (
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={onCancelPrompt}
-                        title="The reply has arrived; end the turn now instead of waiting for the agent to close it"
+                        title={
+                          waitingOn > 0
+                            ? 'The reply has arrived, but the turn waits on its subagents; ending it now stops them'
+                            : 'The reply has arrived; end the turn now instead of waiting for the agent to close it'
+                        }
                       >
                         End turn
                       </Button>

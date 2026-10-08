@@ -197,8 +197,29 @@ export function completeAsyncSubagent(s: AcpSession, taskId: string, report: str
   return { task, call };
 }
 
+/** Why a subagent whose transcript shows it was interrupted is recorded as stopped. */
+export const SUBAGENT_STOPPED = 'Stopped before it finished';
+
 /**
- * Settle as completed every async subagent whose transcript has already ended. Run before
+ * An async subagent was cut short in the agent (its transcript ends on an interrupt, e.g.
+ * the turn holding it was stopped): record it as stopped, on the task and on the launching call.
+ */
+export function stopAsyncSubagent(s: AcpSession, taskId: string, reason: string, at?: number): { task: AgentTask; call?: ToolCallRecord } | null {
+  const task = tasksOf(s).find((t) => t.id === taskId);
+  if (!task || task.status !== 'running') return null;
+  finish(task, 'stopped', reason, at);
+  const call = task.toolCallId ? findCall(s, task.toolCallId) : undefined;
+  if (call) {
+    call.backgroundState = 'stopped';
+    call.backgroundSummary = reason;
+    call.backgroundEndedAt = task.endedAt;
+  }
+  return { task, call };
+}
+
+/**
+ * Settle every async subagent whose transcript has already ended: completed, or stopped when
+ * it ends on an interrupt. Run before
  * background work is stopped (quit, agent stop, restart), so one that finished unnoticed is
  * not recorded as stopped. `alsoStopped` re-checks ones a stop already closed that way.
  */
@@ -217,6 +238,13 @@ export function settleEndedSubagents(s: AcpSession, alsoStopped = false): AgentT
       endedAt = fs.statSync(file).mtimeMs;
     } catch {
       // the transcript's time is only a better end time than now
+    }
+    if (end.stopped) {
+      // Cut short in the agent: already recorded as stopped, or recorded that way now
+      if (task.status !== 'running') continue;
+      const stopped = stopAsyncSubagent(s, task.id, SUBAGENT_STOPPED, endedAt && endedAt >= task.startedAt ? endedAt : undefined);
+      if (stopped) settled.push(stopped.task);
+      continue;
     }
     if (task.status === 'stopped') {
       // The stop's reason described a subagent that was in fact already done
@@ -376,17 +404,53 @@ function backfill(s: AcpSession): void {
 //
 // Claude's adapter reports nothing when an async (background) subagent ends:
 // its Agent call completes at launch with only a transcript path. The last
-// assistant entry in that transcript ending the turn marks the subagent done.
+// assistant entry in that transcript ending the turn marks the subagent done;
+// an interrupt as the last entry, or `stoppedByUser` in the transcript's
+// .meta.json, marks it stopped (a cancel of the turn holding it does this).
 
 const TRANSCRIPT_TAIL = 256 * 1024;
 const WATCH_INTERVAL_MS = 2_000;
 const WATCH_LIMIT_MS = 6 * 60 * 60 * 1000;
 const watchers = new Map<string, NodeJS.Timeout>();
 
+export interface TranscriptEnd {
+  done: boolean;
+  report?: string;
+  /** It ended because it was interrupted, not because it finished. */
+  stopped?: boolean;
+}
+
 /** Whether a subagent transcript (JSONL) has ended, and the report it ended with. */
-export function readTranscriptEnd(file: string): { done: boolean; report?: string } {
+export function readTranscriptEnd(file: string): TranscriptEnd {
   // The adapter names these <tmp>/…/tasks/<agentId>.output (a link to the transcript); read nothing else
   if (!path.isAbsolute(file) || !file.endsWith('.output')) return { done: false };
+  const end = readTranscriptTail(file);
+  if (!end.done && stoppedPerMeta(file)) return { done: true, stopped: true };
+  return end;
+}
+
+// What Claude Code writes as the last transcript entry when it interrupts an agent mid-run
+const INTERRUPT_MARKER = '[Request interrupted by user';
+
+function isInterrupt(entry: any): boolean {
+  const content = entry?.message?.content;
+  if (typeof content === 'string') return content.startsWith(INTERRUPT_MARKER);
+  return Array.isArray(content) && content.some((b: any) => b?.type === 'text' && typeof b.text === 'string' && b.text.startsWith(INTERRUPT_MARKER));
+}
+
+/** Claude Code keeps `<agent>.meta.json` beside the transcript the .output file links to, with `stoppedByUser` once stopped. */
+function stoppedPerMeta(file: string): boolean {
+  try {
+    const transcript = fs.realpathSync(file);
+    if (!transcript.endsWith('.jsonl')) return false;
+    const meta = JSON.parse(fs.readFileSync(transcript.replace(/\.jsonl$/, '.meta.json'), 'utf8'));
+    return meta?.stoppedByUser === true;
+  } catch {
+    return false;
+  }
+}
+
+function readTranscriptTail(file: string): TranscriptEnd {
   let text: string;
   try {
     const { size } = fs.statSync(file);
@@ -411,6 +475,7 @@ export function readTranscriptEnd(file: string): { done: boolean; report?: strin
       continue; // blank, or the partial first line of the tail
     }
     if (entry?.type === 'user') {
+      if (isInterrupt(entry)) return { done: true, stopped: true };
       // A subagent that reports back through a tool (SubagentHandback) ends on that tool's
       // result, flagged toolEndsTurn, rather than on an assistant message
       if (entry.toolEndsTurn !== true) return { done: false };
@@ -450,15 +515,15 @@ function handbackReport(before: string[], result: any): string | undefined {
 }
 
 /**
- * Poll an async subagent's transcript until it ends, then call `onDone`.
- * Stops on its own once `stillRunning` says the task was settled some other way,
- * and calls `onGiveUp` if the transcript has not ended after WATCH_LIMIT_MS.
+ * Poll an async subagent's transcript until it ends, then call `onDone` (`stopped` when it
+ * was interrupted rather than finished). Stops on its own once `stillRunning` says the task
+ * was settled some other way, and calls `onGiveUp` if the transcript has not ended after WATCH_LIMIT_MS.
  */
 export function watchSubagentTranscript(
   key: string,
   file: string,
   stillRunning: () => boolean,
-  onDone: (report: string | undefined) => void,
+  onDone: (report: string | undefined, stopped: boolean) => void,
   onGiveUp?: () => void
 ): void {
   if (watchers.has(key)) return;
@@ -475,7 +540,7 @@ export function watchSubagentTranscript(
     if (!end.done) return;
     clearInterval(timer);
     watchers.delete(key);
-    onDone(end.report);
+    onDone(end.report, end.stopped === true);
   }, WATCH_INTERVAL_MS);
   timer.unref();
   watchers.set(key, timer);

@@ -14,6 +14,8 @@ import {
   endAgentTasks,
   readTranscriptEnd,
   settleEndedSubagents,
+  stopAsyncSubagent,
+  SUBAGENT_STOPPED,
   stopAgentTask,
   syncAgentTasks,
   trackAsyncTask,
@@ -285,6 +287,56 @@ test('a transcript is done only when its last message ends the turn', () => {
   assert.deepEqual(readTranscriptEnd(other), { done: false });
   assert.deepEqual(readTranscriptEnd('relative.output'), { done: false });
   assert.deepEqual(readTranscriptEnd(path.join(dir, 'missing.output')), { done: false });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a transcript that ends on an interrupt, or whose meta says stoppedByUser, is stopped', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tasks-'));
+  const line = (o: unknown) => JSON.stringify(o) + '\n';
+  const busy = line({ type: 'assistant', message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1' }] } });
+  // What Claude Code writes when a cancel cuts a subagent's tool call short
+  const file = path.join(dir, 'abc.output');
+  fs.writeFileSync(
+    file,
+    busy +
+      line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: "The user doesn't want to proceed with this tool use." }] } }) +
+      line({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } })
+  );
+  assert.deepEqual(readTranscriptEnd(file), { done: true, stopped: true });
+  fs.writeFileSync(file, busy + line({ type: 'user', message: { role: 'user', content: '[Request interrupted by user]' } }));
+  assert.deepEqual(readTranscriptEnd(file), { done: true, stopped: true });
+
+  // The .output file links to the transcript; the meta beside it records a stop the transcript may not show yet
+  const transcript = path.join(dir, 'agent-x.jsonl');
+  fs.writeFileSync(transcript, busy);
+  const link = path.join(dir, 'x.output');
+  fs.symlinkSync(transcript, link);
+  assert.deepEqual(readTranscriptEnd(link), { done: false });
+  fs.writeFileSync(path.join(dir, 'agent-x.meta.json'), JSON.stringify({ stoppedByUser: true }));
+  assert.deepEqual(readTranscriptEnd(link), { done: true, stopped: true });
+  // A transcript that finished wins over the meta
+  fs.appendFileSync(transcript, line({ type: 'assistant', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] } }));
+  assert.deepEqual(readTranscriptEnd(link), { done: true, report: 'Done.' });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a subagent cut short in the agent is recorded as stopped, on the task and its call', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tasks-'));
+  const file = path.join(dir, 'cut.output');
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } }) + '\n');
+  const s = session([agentTurn()]);
+  addCall(s, { id: 'a1', title: 'Cut short', status: 'running', startedAt: 1, isSubagent: true });
+  update(s, 'a1', { status: 'completed', background: true, output: 'Async agent launched', agentOutputFile: file });
+  assert.deepEqual(settleEndedSubagents(s).map((t) => t.id), ['a1']);
+  const task = s.agentTasks![0];
+  assert.equal(task.status, 'stopped');
+  assert.equal(task.summary, SUBAGENT_STOPPED);
+  const call = s.turns[0].toolCalls![0];
+  assert.equal(call.backgroundState, 'stopped');
+  assert.equal(call.backgroundSummary, SUBAGENT_STOPPED);
+  // Already stopped: left alone, even when asked to look at stopped ones
+  assert.deepEqual(settleEndedSubagents(s, true), []);
+  assert.equal(stopAsyncSubagent(s, 'a1', 'again'), null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

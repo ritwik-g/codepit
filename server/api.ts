@@ -300,7 +300,9 @@ apiRouter.post('/sessions/:id/queue/:queueId/send', async (req: Request, res: Re
 // 6. Cancel prompt (stop active turn)
 apiRouter.post('/sessions/:id/cancel', async (req: Request, res: Response) => {
   try {
-    await sessionManager.cancelPrompt(sid(req));
+    // Which control asked (Stop, End turn), for the log; anything else is recorded as the API
+    const source = typeof req.body?.source === 'string' ? req.body.source.slice(0, 40) : 'api';
+    await sessionManager.cancelPrompt(sid(req), source);
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

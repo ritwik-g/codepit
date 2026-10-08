@@ -17,7 +17,7 @@ import { getClaudeRateLimits, onClaudeRateLimitsChanged, refreshClaudeRateLimits
 import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, rememberAgentOptions, resolveModelValue } from './agent-options.js';
 import { logQueueEvent } from '../queue-log.js';
 import { decideLimitResume, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit } from '../limit-resume.js';
-import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopTranscriptWatchers, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
+import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
 import type { AcpSession, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
@@ -469,7 +469,7 @@ export class SessionManager extends EventEmitter {
         const host = this.activeHosts.get(session.id);
         if (this.compactionRuns.has(session.id) && host?.isTurnInFlight && Date.now() - host.lastActivityAt > STALE_TURN_MS) {
           console.warn(`[session-mgr] Compaction on ${session.id} silent for ${STALE_TURN_MS / 60_000}m; cancelling`);
-          this.cancelPrompt(session.id).catch(() => {});
+          this.cancelPrompt(session.id, 'silent compaction').catch(() => {});
           continue;
         }
         if (session.state === 'working') {
@@ -479,7 +479,7 @@ export class SessionManager extends EventEmitter {
             this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted' });
           } else if (host?.isTurnInFlight && Date.now() - host.lastActivityAt > STALE_TURN_MS) {
             console.warn(`[session-mgr] Turn on ${session.id} silent for ${STALE_TURN_MS / 60_000}m; cancelling`);
-            this.cancelPrompt(session.id).catch(() => {});
+            this.cancelPrompt(session.id, 'silent turn').catch(() => {});
             continue;
           }
         }
@@ -638,9 +638,9 @@ export class SessionManager extends EventEmitter {
         `${sessionId}:${task.id}`,
         call.agentOutputFile,
         () => store.get(sessionId)?.agentTasks?.find((t) => t.id === task.id)?.status === 'running',
-        (report) => {
+        (report, stopped) => {
           const s = store.get(sessionId);
-          const done = s && completeAsyncSubagent(s, task.id, report);
+          const done = s && (stopped ? stopAsyncSubagent(s, task.id, SUBAGENT_STOPPED) : completeAsyncSubagent(s, task.id, report));
           if (!s || !done) return;
           store.save(s, { touch: false });
           const owner = done.call && findToolCall(s, done.call.id);
@@ -1420,7 +1420,7 @@ export class SessionManager extends EventEmitter {
     session.queuedPrompts = session.queuedPrompts!.filter((q) => q.id !== queueId);
     this.saveQueue(session);
     logQueueEvent(sessionId, 'sent-now', item);
-    if (this.isTurnInFlight(sessionId)) await this.cancelPrompt(sessionId);
+    if (this.isTurnInFlight(sessionId)) await this.cancelPrompt(sessionId, 'send now');
     this.runPrompt(sessionId, item.text, item.attachments, item);
   }
 
@@ -1595,7 +1595,7 @@ export class SessionManager extends EventEmitter {
     if (!session) throw new ScheduleError(`Session ${sessionId} not found`, 404);
     if (!hasAgent(session.agentId)) throw new ScheduleError(`The agent ${session.agentName} is no longer installed`, 409);
     const paused = this.isTurnInFlight(sessionId);
-    if (paused) await this.cancelPrompt(sessionId);
+    if (paused) await this.cancelPrompt(sessionId, 'pause until');
     const s = store.get(sessionId);
     if (!s) throw new ScheduleError(`Session ${sessionId} not found`, 404);
     const prev = s.scheduledResume;
@@ -1742,7 +1742,13 @@ export class SessionManager extends EventEmitter {
     this.activeHosts.get(sessionId)!.resolveElicitation(requestId, answer);
   }
 
-  async cancelPrompt(sessionId: string): Promise<void> {
+  /**
+   * Stop the running turn. `source` says what asked for it and goes to the log, since the
+   * cancel also ends any background subagent the turn is holding (Claude stops them with it).
+   */
+  async cancelPrompt(sessionId: string, source = 'internal'): Promise<void> {
+    const subagents = (store.get(sessionId)?.agentTasks || []).filter((t) => t.kind === 'subagent' && t.status === 'running').length;
+    console.log(`[session-mgr] Cancelling the turn on ${sessionId} (${source})${subagents > 0 ? `; ${subagents} subagent(s) running` : ''}`);
     // Let go of the turn before waiting on the agent: one that still ends cleanly (the agent
     // missed the cancel) must not start the next queued message, and once the wait is over
     // the entry may belong to a newer message

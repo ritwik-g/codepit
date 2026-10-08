@@ -46,6 +46,11 @@ export function hasRunningBackground(session: Pick<AcpSession, 'agentTasks' | 't
   return session.turns.some((t) => t.toolCalls?.some((c) => c.background && (c.backgroundState ?? 'running') === 'running'));
 }
 
+/** Subagents still running. Claude keeps the turn that started one open until it finishes, and stopping that turn stops them too. */
+export function runningSubagents(session: Pick<AcpSession, 'agentTasks'>): { id: string; title: string }[] {
+  return (session.agentTasks || []).filter((t) => t.kind === 'subagent' && t.status === 'running');
+}
+
 export function formatTime(ts: number): string {
   const d = new Date(ts);
   const sameDay = d.toDateString() === new Date().toDateString();

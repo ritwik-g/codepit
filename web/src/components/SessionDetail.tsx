@@ -18,7 +18,7 @@ import { Composer } from './Composer';
 import { MobileActionSheet } from './MobileActionSheet';
 import { isCompacting } from './CompactionCard';
 import { ImageLightbox } from './ImageLightbox';
-import { nextPriority } from './sessionMeta';
+import { nextPriority, runningSubagents } from './sessionMeta';
 import { AgentsPanel, agentTaskCounts } from './AgentsView';
 import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
@@ -148,9 +148,17 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
     }
   };
 
-  const handleCancelPrompt = async () => {
+  const handleCancelPrompt = async (source: 'stop' | 'end turn' = 'stop') => {
+    // The turn may only be open because it waits on subagents, which the agent stops along with it
+    const subagents = runningSubagents(session);
+    if (subagents.length > 0) {
+      const names = subagents.map((t) => `• ${t.title}`).join('\n');
+      const what = source === 'end turn' ? 'Ending the turn' : 'Stopping the turn';
+      const count = subagents.length === 1 ? 'the subagent' : `the ${subagents.length} subagents`;
+      if (!confirm(`${what} also stops ${count} still running:\n\n${names}\n\nTheir unfinished work is lost. Stop anyway?`)) return;
+    }
     try {
-      await api.cancelPrompt(session.id);
+      await api.cancelPrompt(session.id, source);
       onRefresh();
     } catch (err: any) {
       alert(`Error cancelling prompt: ${err.message}`);
@@ -406,7 +414,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
               session={session}
               onRollback={handleRollback}
               onPreviewImage={setPreviewImage}
-              onCancelPrompt={handleCancelPrompt}
+              onCancelPrompt={() => handleCancelPrompt('end turn')}
               onInsertPrompt={(text) => {
                 setPromptText(text);
                 promptInputRef.current?.focus();
@@ -444,7 +452,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
         showModelPicker={showModelPicker}
         setShowModelPicker={setShowModelPicker}
         runLocalCommand={runLocalCommand}
-        onCancelPrompt={handleCancelPrompt}
+        onCancelPrompt={() => handleCancelPrompt('stop')}
         onRefresh={onRefresh}
         onOpenSwitchModal={onOpenSwitchModal}
         above={

@@ -122,9 +122,11 @@ export const api = {
     request<{ ok: boolean }>(`/api/sessions/${id}/queue/${queueId}/send`, {
       method: 'POST',
     }),
-  cancelPrompt: (id: string) =>
+  /** `source` names the control that stopped the turn, for the server's log. */
+  cancelPrompt: (id: string, source?: 'stop' | 'end turn') =>
     request<{ ok: boolean }>(`/api/sessions/${id}/cancel`, {
       method: 'POST',
+      body: JSON.stringify({ source }),
     }),
   stopSessionAgent: (id: string) =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/stop`, {
