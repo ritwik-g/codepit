@@ -483,6 +483,8 @@ export interface AgentLiveMark {
   /** When that process started and when the machine booted (ms): a reused pid is not that process. */
   started?: number;
   boot?: number;
+  /** Subagents and background tasks a quit stopped with the agent. */
+  backgroundRunning?: number;
 }
 
 /** The agent was running when CodePit last closed (quit, crash or update); offered back, never restarted on its own. */
@@ -491,8 +493,10 @@ export interface RestoreOffer {
   runningSince: number;
   /** When this run of CodePit found it. */
   foundAt: number;
-  /** A turn was in progress; it is not sent again. */
+  /** A turn was in progress when CodePit closed. */
   turnInterrupted: boolean;
+  /** Subagents and background tasks the close stopped mid-run. */
+  backgroundInterrupted?: number;
   /** Restoring continues the same agent session; false: a new one, handed a summary. */
   continues: boolean;
   /** Why the last restore failed; the offer stays so it can be retried or dismissed. */

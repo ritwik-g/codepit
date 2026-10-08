@@ -4,8 +4,8 @@ import { api } from '../api';
 import { Button, Icon, Spinner } from '../ui';
 
 // Agents that were running when CodePit last closed (quit, crash or update) are offered
-// back here. Nothing restarts on its own and nothing is sent again: a click starts the
-// agent, continuing its agent session where it can.
+// back here. Nothing restarts on its own: a click starts the agent, continuing its agent
+// session where it can, and asks it to carry on with any work the close cut short.
 
 /** The session's agent was running when CodePit closed and can be started again. */
 export const isRestorable = (s: SessionSummary) => Boolean(s.restore) && !s.user.cleanup && s.isAgentRunning !== true;
@@ -101,6 +101,11 @@ export const RestoreSessionBanner: React.FC<{ summary: SessionSummary; queuedCou
 
   // A failed start the server kept with the offer; one from this click shows once
   const shownError = error || offer.error;
+  const background = offer.backgroundInterrupted ?? 0;
+  const interrupted = [
+    offer.turnInterrupted ? 'in the middle of a turn' : '',
+    background > 0 ? `with ${plural(background, 'subagent or background task', 'subagents or background tasks')} running` : '',
+  ].filter(Boolean).join(' and ');
   return (
     <section className="ws-approval ws-restore" role="region" aria-label="Restore agent">
       <span className="ws-approval-icon" aria-hidden>
@@ -109,9 +114,11 @@ export const RestoreSessionBanner: React.FC<{ summary: SessionSummary; queuedCou
       <div className="ws-approval-body">
         <div className="ws-approval-kicker">Agent was running</div>
         <div className="ws-restore-text">
-          The agent was running when CodePit closed{offer.turnInterrupted ? ', in the middle of a turn' : ''}. Restore starts it again and{' '}
-          {offer.continues ? 'continues the same agent session' : 'starts a new agent session with a summary of this conversation'}. Nothing is
-          sent again{queuedCount > 0 ? `, and ${plural(queuedCount, 'queued message stays', 'queued messages stay')} paused` : ''}.
+          The agent was running when CodePit closed{interrupted ? `, ${interrupted}` : ''}. Restore starts it again and{' '}
+          {offer.continues ? 'continues the same agent session' : 'starts a new agent session with a summary of this conversation'}.{' '}
+          {interrupted
+            ? `It is then asked to continue from where it stopped${queuedCount > 0 ? `, and ${plural(queuedCount, 'queued message goes', 'queued messages go')} after that` : ''}.`
+            : `Nothing is sent${queuedCount > 0 ? `, and ${plural(queuedCount, 'queued message stays', 'queued messages stay')} paused` : ''}.`}
         </div>
         {shownError && <div className="ws-restore-error">Could not start: {shownError}</div>}
       </div>

@@ -117,7 +117,8 @@ as they would in your terminal, using your existing logins.
 - A packaged Electron app with the server inside it. Quitting asks first when
   agents are running. After a quit or a crash, CodePit offers **Restore** (or
   **Restore all**) for the agents that were running; each continues its own
-  agent session, and nothing is sent again without a click.
+  agent session. An agent that was mid-turn, or had subagents or background
+  tasks running, is asked to continue from where it was interrupted.
 - `npm run install:mac` installs the build you just made (see [Install](#install)).
 
 ---

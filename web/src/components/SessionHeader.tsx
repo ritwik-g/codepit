@@ -264,7 +264,7 @@ export const SessionHeader: React.FC<{
             loading={restoring}
             disabled={restoring}
             onClick={onRestore}
-            title="Start the agent that was running when CodePit closed; nothing is sent again"
+            title="Start the agent that was running when CodePit closed; it is asked to continue any work that was cut short"
           >
             Restore agent
           </Button>

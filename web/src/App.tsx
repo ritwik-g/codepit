@@ -260,11 +260,17 @@ export const App: React.FC = () => {
               if (!prev || prev.id !== msg.sessionId) return prev;
               const turns = [...prev.turns];
               const idx = turns.findIndex((t) => t.id === msg.turn.id);
-              if (idx !== -1) {
-                turns[idx] = { ...turns[idx], ...msg.turn };
-              } else {
-                turns.push(msg.turn);
+              let turn = idx !== -1 ? { ...turns[idx], ...msg.turn } : msg.turn;
+              // Tool events carry the turn without its calls (a long turn's are megabytes); the one call that changed comes alone
+              if (msg.toolCall && !msg.turn.toolCalls) {
+                const calls = [...(turn.toolCalls || [])];
+                const at = calls.findIndex((c) => c.id === msg.toolCall.id);
+                if (at === -1) calls.push(msg.toolCall);
+                else calls[at] = msg.toolCall;
+                turn = { ...turn, toolCalls: calls };
               }
+              if (idx !== -1) turns[idx] = turn;
+              else turns.push(turn);
               return { ...prev, turns };
             });
           }

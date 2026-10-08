@@ -17,6 +17,27 @@ interface Peer {
 export const WS_CLOSE_REVOKED = 4401;
 
 /**
+ * How far a client may fall behind before it is dropped. The socket keeps every unsent message
+ * in memory, so a client that stops reading (a phone asleep on the LAN) held gigabytes of a
+ * busy session's events until the server ran out of heap. A dropped client reconnects and
+ * refetches what it missed.
+ */
+export const WS_MAX_BUFFERED = 32 * 1024 * 1024;
+/** A socket that answers no ping within this long is gone (asleep, off the network). */
+const WS_HEARTBEAT_MS = 30_000;
+
+/** Send, unless the client has stopped keeping up: then drop it rather than queue more. */
+export function sendOrDrop(ws: WebSocket, text: string): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount + text.length > WS_MAX_BUFFERED) {
+    console.warn(`[ws] Dropping a client ${Math.round(ws.bufferedAmount / 1048576)} MB behind; it reconnects and refetches`);
+    ws.terminate();
+    return;
+  }
+  ws.send(text);
+}
+
+/**
  * Sets up the WebSocket endpoints and returns `attach`, which adds them to an HTTP
  * listener. The loopback listener and every LAN listener share one set of clients,
  * so session events are relayed once however many listeners there are.
@@ -46,7 +67,12 @@ export function setupWebSockets(): (server: Server) => void {
       const peer: Peer = { local: decision.local, deviceId: decision.deviceId };
       wss.handleUpgrade(request, socket, head, (ws) => {
         peers.set(ws, peer);
-        ws.on('close', () => peers.delete(ws));
+        alive.add(ws);
+        ws.on('pong', () => alive.add(ws));
+        ws.on('close', () => {
+          peers.delete(ws);
+          alive.delete(ws);
+        });
         wss.emit('connection', ws, request, url);
       });
     } else {
@@ -58,6 +84,20 @@ export function setupWebSockets(): (server: Server) => void {
   // Every open socket, terminals included, so a revoked device can be cut off at once
   const peers = new Map<WebSocket, Peer>();
 
+  // Sockets that answered the last ping; one that did not is closed, so nothing queues for it
+  const alive = new Set<WebSocket>();
+  const heartbeat = setInterval(() => {
+    for (const ws of peers.keys()) {
+      if (!alive.has(ws)) {
+        ws.terminate();
+        continue;
+      }
+      alive.delete(ws);
+      ws.ping();
+    }
+  }, WS_HEARTBEAT_MS);
+  heartbeat.unref();
+
   devices.on('revoked', (deviceId: string) => {
     for (const [ws, peer] of peers) {
       if (peer.deviceId === deviceId) ws.close(WS_CLOSE_REVOKED, 'Device access revoked');
@@ -68,7 +108,7 @@ export function setupWebSockets(): (server: Server) => void {
   const toLocal = (msg: object) => {
     const text = JSON.stringify(msg);
     for (const ws of sessionClients) {
-      if (peers.get(ws)?.local && ws.readyState === WebSocket.OPEN) ws.send(text);
+      if (peers.get(ws)?.local) sendOrDrop(ws, text);
     }
   };
   devices.on('pairingRequest', (request) => toLocal({ type: 'pairingRequest', request }));
@@ -78,7 +118,7 @@ export function setupWebSockets(): (server: Server) => void {
   sessionManager.on('claudeRateLimits', (rateLimits) => {
     const msg = JSON.stringify({ type: 'claudeRateLimits', rateLimits });
     for (const ws of sessionClients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      sendOrDrop(ws, msg);
     }
   });
 
@@ -86,7 +126,7 @@ export function setupWebSockets(): (server: Server) => void {
   sessionManager.on('sessionsUpdated', (sessions) => {
     const msg = JSON.stringify({ type: 'sessionsUpdated', sessions });
     for (const ws of sessionClients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      sendOrDrop(ws, msg);
     }
   });
 
@@ -107,21 +147,21 @@ export function setupWebSockets(): (server: Server) => void {
       taskText: payload.taskText,
     });
     for (const ws of sessionClients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      sendOrDrop(ws, msg);
     }
   });
 
   sessionManager.on('permissionRequested', (payload) => {
     const msg = JSON.stringify({ type: 'permissionRequested', ...payload });
     for (const ws of sessionClients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      sendOrDrop(ws, msg);
     }
   });
 
   sessionManager.on('permissionResolved', (payload) => {
     const msg = JSON.stringify({ type: 'permissionResolved', ...payload });
     for (const ws of sessionClients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      sendOrDrop(ws, msg);
     }
   });
 
@@ -130,7 +170,7 @@ export function setupWebSockets(): (server: Server) => void {
     sessionManager.on(type, (payload) => {
       const msg = JSON.stringify({ type, ...payload });
       for (const ws of sessionClients) {
-        if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+        sendOrDrop(ws, msg);
       }
     });
   }
@@ -165,9 +205,7 @@ export function setupWebSockets(): (server: Server) => void {
       }
 
       const onData = (evt: { id: string; data: string }) => {
-        if (evt.id === termId && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'data', data: evt.data }));
-        }
+        if (evt.id === termId) sendOrDrop(ws, JSON.stringify({ type: 'data', data: evt.data }));
       };
 
       const onExit = (evt: { id: string; exitCode: number | null }) => {

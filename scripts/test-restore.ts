@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 /**
  * Restoring agents after CodePit restarts: an agent running at a quit or a crash is
- * offered back (never restarted on its own); Restore continues its agent session and
- * sends nothing again; the cases with no offer (stopped, exited, cleanup, agent gone,
+ * offered back (never restarted on its own); Restore continues its agent session and asks
+ * the agent to carry on with a turn, subagents or background tasks the close cut short,
+ * and sends nothing otherwise; the cases with no offer (stopped, exited, cleanup, agent gone,
  * another live CodePit); the manual actions that clear it; a failed restore; Restore all
  * a few at a time; and the HTTP routes. Runs against a scripted agent.
  */
@@ -85,8 +86,9 @@ const field = (reply: string, key: string) => reply.match(new RegExp(`${key}=(\\
 const notes = (id: string) => sessionManager.getSession(id)!.turns.filter((t) => t.role === 'system').map((t) => t.content || '');
 const summary = (id: string) => sessionManager.listSessions().find((s) => s.id === id);
 const onDisk = (id: string) => JSON.parse(fs.readFileSync(path.join(getSessionsDir(), `${id}.json`), 'utf8'));
-const promptsSeen = (agentSessionId: string): number =>
-  JSON.parse(fs.readFileSync(path.join(stateDir, `${agentSessionId}.json`), 'utf8')).prompts.length;
+const promptsOf = (agentSessionId: string): string[] =>
+  JSON.parse(fs.readFileSync(path.join(stateDir, `${agentSessionId}.json`), 'utf8')).prompts;
+const promptsSeen = (agentSessionId: string): number => promptsOf(agentSessionId).length;
 
 /** CodePit quits and starts again in this process. */
 function restart(): void {
@@ -172,7 +174,7 @@ async function main(): Promise<void> {
   await sessionManager.restoreSession(a);
   check('restoring a running agent again is harmless', summary(a)?.isAgentRunning === true);
 
-  console.log('4. A turn cut off by the quit is not sent again');
+  console.log('4. A turn cut off by the quit is asked to continue');
   const c = await newSession();
   await ask(c, 'warm up');
   const cAgent = sessionManager.getSession(c)!.agentSessionId!;
@@ -190,12 +192,15 @@ async function main(): Promise<void> {
   sessionManager.init();
   check('a second start adds no second note', notes(c).filter((n) => n.startsWith('CodePit stopped while')).length === 1);
   await sessionManager.restoreSession(c);
-  await sleep(500);
-  check('nothing was sent again', promptsSeen(cAgent) === seenBefore, { before: seenBefore, after: promptsSeen(cAgent) });
-  check('the note says so', notes(c).some((n) => n.includes('not sent again')), notes(c).slice(-2));
-  check('not working after the restore', sessionManager.getSession(c)!.state !== 'working');
+  await waitFor(() => promptsSeen(cAgent) > seenBefore);
+  await waitForIdle(c);
+  const cPrompts = promptsOf(cAgent);
+  check('one message was sent', cPrompts.length === seenBefore + 1, { before: seenBefore, after: cPrompts.length });
+  check('asking it to continue, not the cut-off prompt again', /CodePit restarted and stopped your turn/.test(cPrompts.at(-1)!) && /Continue from where you left off/.test(cPrompts.at(-1)!), cPrompts.at(-1));
+  check('the note says so', notes(c).some((n) => n.includes('Asked it to continue')), notes(c).slice(-2));
+  check('needs you once that turn ends', sessionManager.getSession(c)!.state === 'needs_you', sessionManager.getSession(c)!.state);
 
-  console.log('5. A paused queue stays paused');
+  console.log('5. Queued messages follow the continue message');
   const d = await newSession();
   await ask(d, 'warm up');
   const slow = sessionManager.sendPrompt(d, 'slow-turn').catch(() => {});
@@ -205,11 +210,44 @@ async function main(): Promise<void> {
   check('queued behind the turn', queued.queued === true);
   restart();
   void slow;
+  const dAgent = sessionManager.getSession(d)!.agentSessionId!;
   await sessionManager.restoreSession(d);
-  await sleep(1000);
-  check('the queued message is still there', sessionManager.getSession(d)!.queuedPrompts?.length === 1, sessionManager.getSession(d)!.queuedPrompts);
-  check('and was not sent', sessionManager.getSession(d)!.state !== 'working' && !sessionManager.isTurnInFlight(d));
-  check('the note says it stays paused', notes(d).some((n) => n.includes('1 queued message stays paused')), notes(d).slice(-2));
+  check('the note says it goes after', notes(d).some((n) => n.includes('1 queued message goes after that')), notes(d).slice(-2));
+  await waitFor(() => (sessionManager.getSession(d)!.queuedPrompts?.length ?? 0) === 0 && !sessionManager.isTurnInFlight(d), 20_000);
+  const dPrompts = promptsOf(dAgent);
+  check('continue first, then the queued message', /Continue from where you left off/.test(dPrompts.at(-2) || '') && dPrompts.at(-1) === 'queued for later', dPrompts.slice(-2));
+
+  console.log('5b. Subagents running at the quit are picked up');
+  const g = await newSession();
+  await ask(g, 'warm up');
+  const gAgent = sessionManager.getSession(g)!.agentSessionId!;
+  const gStored = store.get(g)!;
+  gStored.agentTasks = [
+    { id: 'task-a', kind: 'subagent', title: 'Review A', status: 'running', startedAt: Date.now() },
+    { id: 'task-b', kind: 'subagent', title: 'Review B', status: 'running', startedAt: Date.now() },
+    { id: 'task-c', kind: 'subagent', title: 'Review C', status: 'completed', startedAt: Date.now(), endedAt: Date.now() },
+  ] as any;
+  store.save(gStored, { now: true });
+  const gSeen = promptsSeen(gAgent);
+  restart();
+  check('offered with the running ones counted, the turn not cut off', summary(g)?.restore?.backgroundInterrupted === 2 && summary(g)?.restore?.turnInterrupted === false, summary(g)?.restore);
+  check('and they are marked stopped', store.get(g)!.agentTasks!.filter((t) => t.status === 'stopped').length === 2);
+  sessionManager.init();
+  check('a second start keeps the count', summary(g)?.restore?.backgroundInterrupted === 2, summary(g)?.restore);
+  await sessionManager.restoreSession(g);
+  await waitFor(() => promptsSeen(gAgent) > gSeen);
+  await waitForIdle(g);
+  check('asked to pick them up', /stopped 2 subagents or background tasks you started/.test(promptsOf(gAgent).at(-1) || ''), promptsOf(gAgent).at(-1));
+
+  console.log('5c. Nothing cut short: nothing is sent');
+  const h = await newSession();
+  await ask(h, 'warm up');
+  const hAgent = sessionManager.getSession(h)!.agentSessionId!;
+  const hSeen = promptsSeen(hAgent);
+  restart();
+  await sessionManager.restoreSession(h);
+  await sleep(500);
+  check('no message', promptsSeen(hAgent) === hSeen && !sessionManager.isTurnInFlight(h));
 
   console.log('6. When the agent cannot continue its session, restore starts a new one');
   const e = await newSession();

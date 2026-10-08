@@ -256,6 +256,16 @@ export class SessionManager extends EventEmitter {
     const run = this.compactionRuns.get(sessionId);
     if (run) this.finishCompaction(sessionId, run, { stopReason: 'cancelled' });
     this.settleAgentCompactions(sessionId, 'Stopped when the agent was stopped');
+    if (opts.appQuit) {
+      // Kept with the mark, as the stop below ends them: the restore asks the agent to pick them up
+      const s = store.get(sessionId);
+      if (s?.agentLive) {
+        settleEndedSubagents(s);
+        const background = runningBackgroundWork(s);
+        if (background > 0) s.agentLive.backgroundRunning = background;
+        else delete s.agentLive.backgroundRunning;
+      }
+    }
     this.settleBackgroundWork(sessionId, 'Stopped when the agent was stopped');
     const host = this.activeHosts.get(sessionId);
     if (host) {
@@ -377,6 +387,7 @@ export class SessionManager extends EventEmitter {
       // The agent was running when CodePit last closed (quit or crash): offer it back, never restart it here.
       // A mark another live CodePit on the same data dir owns is its agent, not ours to offer
       const live = session.agentLive;
+      let offered = false;
       if (live && !host && !(live.pid !== process.pid && liveMarkOwnerAlive(live))) {
         if (!session.user.cleanup && hasAgent(session.agentId)) {
           session.restore = {
@@ -385,6 +396,7 @@ export class SessionManager extends EventEmitter {
             turnInterrupted: wasWorking,
             continues: Boolean(resumableSessionId(session)),
           };
+          offered = true;
         }
         delete session.agentLive;
         sessionChanged = true;
@@ -413,6 +425,12 @@ export class SessionManager extends EventEmitter {
       // No agent survives a server restart, so a stored approval request or form can never be answered
       if (!host && clearPendingRequests(session)) {
         sessionChanged = true;
+      }
+      // Counted before they are marked stopped: a restore asks the agent to pick them up
+      if (offered && session.restore) {
+        // A quit stopped them already and kept the count on the mark; a crash left them running
+        const running = Math.max(live?.backgroundRunning ?? 0, runningBackgroundWork(session));
+        if (running > 0) session.restore.backgroundInterrupted = running;
       }
       if (!host && endBackgroundWork(session, 'Stopped when the server restarted')) {
         sessionChanged = true;
@@ -856,7 +874,7 @@ export class SessionManager extends EventEmitter {
         if (owner) owner.call.subagentText = appendSubagentText(owner.call.subagentText, text);
         // Only the chunk goes out, as for the main thread; resending the whole call or task per chunk grows with its length
         if (task) this.emitTaskText(s.id, task, text, owner?.call.id);
-        else if (owner) this.emit('sessionStream', { sessionId: s.id, type: 'toolCallUpdate', toolCall: owner.call, turn: owner.turn });
+        else if (owner) this.emit('sessionStream', { sessionId: s.id, type: 'toolCallUpdate', toolCall: owner.call, turn: withoutToolCalls(owner.turn) });
         return;
       }
       const turn = ensureAgentTurn(s);
@@ -889,7 +907,7 @@ export class SessionManager extends EventEmitter {
       }
       const agentTasks = this.agentTasksChanged(s.id, trackToolCall(s, record));
       store.save(s);
-      this.emit('sessionStream', { sessionId: s.id, type: 'toolCall', toolCall: record, turn, agentTasks });
+      this.emit('sessionStream', { sessionId: s.id, type: 'toolCall', toolCall: record, turn: withoutToolCalls(turn), agentTasks });
     });
 
     host.on('toolCallUpdate', (record: ToolCallRecord) => {
@@ -901,7 +919,7 @@ export class SessionManager extends EventEmitter {
       Object.assign(owner.call, patch);
       const agentTasks = this.agentTasksChanged(s.id, trackToolCallUpdate(s, owner.call));
       store.save(s);
-      this.emit('sessionStream', { sessionId: s.id, type: 'toolCallUpdate', toolCall: owner.call, turn: owner.turn, agentTasks });
+      this.emit('sessionStream', { sessionId: s.id, type: 'toolCallUpdate', toolCall: owner.call, turn: withoutToolCalls(owner.turn), agentTasks });
     });
 
     // Background shells and other async work settle after their tool call has
@@ -944,7 +962,7 @@ export class SessionManager extends EventEmitter {
       if (task) trackToolCallUpdate(s, call);
       store.save(s, { touch: false });
       // Not 'toolCallUpdate': the turn may be long over, and that event marks the session working
-      this.emit('sessionStream', { sessionId: s.id, type: 'backgroundUpdate', toolCall: call, turn: owner.turn, agentTasks: task ? [task] : undefined, removedAgentTaskIds });
+      this.emit('sessionStream', { sessionId: s.id, type: 'backgroundUpdate', toolCall: call, turn: withoutToolCalls(owner.turn), agentTasks: task ? [task] : undefined, removedAgentTaskIds });
       this.recheckAutoCompact(s.id);
     });
 
@@ -1059,7 +1077,7 @@ export class SessionManager extends EventEmitter {
       }
       store.save(s);
       // Not 'toolCall': that event marks the session working, and it is waiting on the user
-      this.emit('sessionStream', { sessionId: s.id, type: 'elicitation', toolCall: owner.call, turn: owner.turn, session: { pendingElicitation: e, state: s.state } });
+      this.emit('sessionStream', { sessionId: s.id, type: 'elicitation', toolCall: owner.call, turn: withoutToolCalls(owner.turn), session: { pendingElicitation: e, state: s.state } });
       this.emit('elicitationRequested', { sessionId: s.id, elicitation: e });
       this.emit('sessionsUpdated', this.listSessions());
     });
@@ -1073,7 +1091,7 @@ export class SessionManager extends EventEmitter {
       const owner = findElicitationCall(s, requestId);
       if (owner) settleElicitationRecord(owner.call, outcome);
       store.save(s);
-      if (owner) this.emit('sessionStream', { sessionId: s.id, type: 'elicitation', toolCall: owner.call, turn: owner.turn, session: { pendingElicitation: s.pendingElicitation ?? null, state: s.state } });
+      if (owner) this.emit('sessionStream', { sessionId: s.id, type: 'elicitation', toolCall: owner.call, turn: withoutToolCalls(owner.turn), session: { pendingElicitation: s.pendingElicitation ?? null, state: s.state } });
       this.emit('elicitationResolved', { sessionId: s.id, requestId, action: outcome.action });
       this.emit('sessionsUpdated', this.listSessions());
     });
@@ -1819,8 +1837,10 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Start the agent that was running when CodePit last closed. It continues the same agent
-   * session where the agent can (ensureHost); nothing is sent again, and queued messages stay
-   * paused. A failed start keeps the offer with its error, so it can be retried or dismissed.
+   * session where the agent can (ensureHost). Work the close cut short (a turn, subagents,
+   * background tasks) gets a message asking the agent to continue, and queued messages follow
+   * it; otherwise nothing is sent and queued messages stay paused. A failed start keeps the
+   * offer with its error, so it can be retried or dismissed.
    */
   async restoreSession(sessionId: string): Promise<AcpSession> {
     // A double click, or a row's Restore during Restore all: join the restore already running
@@ -1872,13 +1892,22 @@ export class SessionManager extends EventEmitter {
   }
 
   private async runRestore(sessionId: string, offer: RestoreOffer, queued: number): Promise<AcpSession> {
+    // Work the close cut short is picked up again: the agent is asked to carry on
+    const background = offer.backgroundInterrupted ?? 0;
+    const carryOn = offer.turnInterrupted || background > 0;
     const note = [
       '▶️ Agent restored after CodePit restarted.',
-      offer.turnInterrupted ? 'The interrupted turn was not sent again; ask it to carry on.' : '',
-      queued > 0 ? `${queued} queued ${queued === 1 ? 'message stays' : 'messages stay'} paused until you send one.` : '',
+      carryOn ? 'Asked it to continue from where it was interrupted.' : '',
+      queued > 0
+        ? carryOn
+          ? `${queued} queued ${queued === 1 ? 'message goes' : 'messages go'} after that.`
+          : `${queued} queued ${queued === 1 ? 'message stays' : 'messages stay'} paused until you send one.`
+        : '',
     ].filter(Boolean).join(' ');
     try {
-      return await this.startSessionAgent(sessionId, { note });
+      const started = await this.startSessionAgent(sessionId, { note });
+      if (carryOn && !this.isTurnInFlight(sessionId)) this.runPrompt(sessionId, restorePrompt(offer));
+      return started;
     } catch (err: any) {
       const current = store.get(sessionId);
       // The offer is still there unless the user took the session back meanwhile (Stop, a switch,
@@ -2842,6 +2871,33 @@ function readTaskOutput(file: string | undefined): string | undefined {
 }
 
 /** Mark background work still running as stopped: it cannot outlive the agent process. */
+/** What a restore sends when the close cut the agent's work short. */
+export function restorePrompt(offer: Pick<RestoreOffer, 'turnInterrupted' | 'backgroundInterrupted'>): string {
+  const background = offer.backgroundInterrupted ?? 0;
+  const what = [
+    offer.turnInterrupted ? 'your turn' : '',
+    background > 0 ? `${background} ${background === 1 ? 'subagent or background task' : 'subagents or background tasks'} you started` : '',
+  ].filter(Boolean).join(' and ');
+  return (
+    `CodePit restarted and stopped ${what} before ${offer.turnInterrupted && background === 0 ? 'it' : 'they'} finished. ` +
+    (background > 0 ? 'Those subagents and tasks are gone: check what they finished and start again whatever they had not. ' : '') +
+    'Continue from where you left off.'
+  );
+}
+
+/** Subagents and background tasks still marked running. */
+function runningBackgroundWork(s: AcpSession): number {
+  const tasks = (s.agentTasks || []).filter((t) => t.status === 'running');
+  const taskCalls = new Set(tasks.map((t) => t.toolCallId).filter(Boolean));
+  let calls = 0;
+  for (const turn of s.turns) {
+    for (const call of turn.toolCalls || []) {
+      if (call.background && (call.backgroundState ?? 'running') === 'running' && !taskCalls.has(call.id)) calls++;
+    }
+  }
+  return tasks.length + calls;
+}
+
 function endBackgroundWork(s: AcpSession, reason: string): boolean {
   // A subagent that had already finished, unnoticed, is completed rather than stopped
   let changed = settleEndedSubagents(s).length > 0;

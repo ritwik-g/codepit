@@ -43,6 +43,13 @@ async function runTests() {
   console.log('🧪 [Test Suite] Starting CodePit Test Suite...\n');
   console.log(`📁 Using isolated test storage: ${testAppDir}\n`);
 
+  // Tool events carry their one call and the turn without its calls: a long turn's calls are
+  // megabytes, and resending them per event ran CodePit out of memory
+  const toolEvents: Array<{ type: string; withCalls: boolean }> = [];
+  sessionManager.on('sessionStream', (evt: any) => {
+    if (evt.toolCall && evt.turn) toolEvents.push({ type: evt.type, withCalls: 'toolCalls' in evt.turn });
+  });
+
   // Verify that test suite is NOT using the user's production ~/.codepit directory
   const realUserSessionsDir = path.join(os.homedir(), '.codepit', 'sessions');
   const initialUserFiles = fs.existsSync(realUserSessionsDir) ? fs.readdirSync(realUserSessionsDir) : [];
@@ -191,6 +198,10 @@ async function runTests() {
     const toolCall = completedTurn.toolCalls?.[0];
     console.log(`   Tool call status: ${toolCall?.status} (output length: ${toolCall?.output?.length || 0})`);
     console.log('   ✅ Tool executed and turn completed after permission approval\n');
+    if (toolEvents.length === 0 || toolEvents.some((e) => e.withCalls)) {
+      throw new Error(`Tool events should send the turn without its tool calls: ${JSON.stringify(toolEvents)}`);
+    }
+    console.log(`   ✅ ${toolEvents.length} tool events sent the turn without its tool calls\n`);
 
     // 7. Test Priority & Annotations
     console.log('7️⃣ Testing Priority Boost & Pinned...');
