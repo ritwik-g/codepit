@@ -83,6 +83,11 @@ export const App: React.FC = () => {
   const [offline, setOffline] = useState(false);
   const { resolved: resolvedTheme, preference: themePreference, setPreference: setThemePreference } = useTheme();
   const [notifyOn, setNotifyOn] = useState(notificationsEnabled);
+  // Keep asynchronous work tied to the session that is currently wanted, rather
+  // than the session that happened to be selected when a request began.
+  const selectedIdRef = useRef<string | null>(selectedId);
+  selectedIdRef.current = selectedId;
+  const detailRequestRef = useRef<AbortController | null>(null);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -90,14 +95,19 @@ export const App: React.FC = () => {
       setSessions(res.sessions);
       setAuthError(false);
       setOffline(false);
-      if (selectedId && !res.sessions.some((s) => s.id === selectedId)) {
+      const currentSelectedId = selectedIdRef.current;
+      if (currentSelectedId && !res.sessions.some((s) => s.id === currentSelectedId)) {
         // The open session was deleted (here or from another tab/device).
-        setSelectedId(res.sessions[0]?.id ?? null);
-      } else if (selectedId) {
-        const match = res.sessions.find((s) => s.id === selectedId);
+        const nextId = res.sessions[0]?.id ?? null;
+        selectedIdRef.current = nextId;
+        detailRequestRef.current?.abort();
+        setActiveSession(null);
+        setSelectedId(nextId);
+      } else if (currentSelectedId) {
+        const match = res.sessions.find((s) => s.id === currentSelectedId);
         if (match) {
           setActiveSession((prev) => {
-            if (!prev || prev.id !== selectedId) return prev;
+            if (!prev || prev.id !== currentSelectedId) return prev;
             if (prev.state !== match.state) {
               return { ...prev, state: match.state };
             }
@@ -113,19 +123,42 @@ export const App: React.FC = () => {
         setOffline(true);
       }
     }
-  }, [selectedId]);
+  }, []);
 
   const fetchSessionDetail = useCallback(async (id: string) => {
+    detailRequestRef.current?.abort();
+    const request = new AbortController();
+    detailRequestRef.current = request;
     try {
-      const res = await api.getSession(id);
+      const res = await api.getSession(id, request.signal);
+      // A slower response for an earlier tap must never replace the session the
+      // user selected most recently. This is especially noticeable over LAN.
+      if (request.signal.aborted || detailRequestRef.current !== request || selectedIdRef.current !== id) return;
       setActiveSession(res.session);
     } catch (err: any) {
+      if (request.signal.aborted || err?.name === 'AbortError') return;
       console.error(`[App] Failed to fetch session detail for ${id}:`, err);
       if (isUnauthorized(err)) {
         setAuthError(true);
       }
+    } finally {
+      if (detailRequestRef.current === request) detailRequestRef.current = null;
     }
   }, []);
+
+  const selectSession = useCallback((id: string) => {
+    if (selectedIdRef.current !== id) {
+      // Cancel a potentially very large old transcript immediately; waiting for
+      // its body to download/parse made fast taps on mobile feel unresponsive.
+      selectedIdRef.current = id;
+      detailRequestRef.current?.abort();
+      setActiveSession((prev) => (prev?.id === id ? prev : null));
+    }
+    setSelectedId(id);
+    setMobileView('session');
+  }, []);
+
+  useEffect(() => () => detailRequestRef.current?.abort(), []);
 
   // Initial load
   useEffect(() => {
@@ -142,8 +175,6 @@ export const App: React.FC = () => {
   // System notifications: a turn finished, or the agent asks something. Not for the session
   // the user is looking at right now.
   const prevSessionsRef = useRef<Map<string, SessionSummary>>(new Map());
-  const selectedIdRef = useRef(selectedId);
-  selectedIdRef.current = selectedId;
   useEffect(() => askForNotificationsOnFirstGesture(), []);
   useEffect(() => {
     const prev = prevSessionsRef.current;
@@ -154,13 +185,12 @@ export const App: React.FC = () => {
       const looking = document.visibilityState === 'visible' && document.hasFocus() && selectedIdRef.current === s.id;
       if (!looking) {
         showAlert(alert, () => {
-          setSelectedId(s.id);
-          setMobileView('session');
+          selectSession(s.id);
         });
       }
     }
     prevSessionsRef.current = new Map(sessions.map((s) => [s.id, s]));
-  }, [sessions]);
+  }, [sessions, selectSession]);
 
   // The open session's finished turn counts as seen while the window is in front
   const selectedUnseen = sessions.some((s) => s.id === selectedId && isUnseen(s));
@@ -195,15 +225,20 @@ export const App: React.FC = () => {
   useEffect(() => {
     let wasOffline = false;
     const ws = connectWebSocket((msg) => {
+      const currentSelectedId = selectedIdRef.current;
       if (msg.type === 'sessionsUpdated' && Array.isArray(msg.sessions)) {
         setSessions(msg.sessions);
-        if (selectedId) {
-          const match = msg.sessions.find((s: SessionSummary) => s.id === selectedId);
+        if (currentSelectedId) {
+          const match = msg.sessions.find((s: SessionSummary) => s.id === currentSelectedId);
           if (!match) {
-            setSelectedId(msg.sessions[0]?.id ?? null);
+            const nextId = msg.sessions[0]?.id ?? null;
+            selectedIdRef.current = nextId;
+            detailRequestRef.current?.abort();
+            setActiveSession(null);
+            setSelectedId(nextId);
           } else {
             setActiveSession((prev) => {
-              if (!prev || prev.id !== selectedId) return prev;
+              if (!prev || prev.id !== currentSelectedId) return prev;
               if (prev.state !== match.state) {
                 return { ...prev, state: match.state };
               }
@@ -216,9 +251,9 @@ export const App: React.FC = () => {
         if (msg.event === 'agentOptions') {
           api.getAgents().then((res) => setAgents(res.agents)).catch(() => {});
         }
-        if (selectedId && msg.sessionId === selectedId) {
+        if (currentSelectedId && msg.sessionId === currentSelectedId) {
           if (msg.session) {
-            setActiveSession((prev) => (prev && prev.id === selectedId ? { ...prev, ...msg.session } : prev));
+            setActiveSession((prev) => (prev && prev.id === currentSelectedId ? { ...prev, ...msg.session } : prev));
           }
           if (msg.turn) {
             setActiveSession((prev) => {
@@ -254,22 +289,22 @@ export const App: React.FC = () => {
             setActiveSession((prev) => (prev && prev.id === msg.sessionId ? { ...prev, rateLimits: msg.rateLimits || prev.rateLimits } : prev));
           }
           if (msg.event === 'promptSuggestion' || msg.promptSuggestion) {
-            setActiveSession((prev) => (prev && prev.id === selectedId ? { ...prev, promptSuggestion: msg.promptSuggestion || prev.promptSuggestion } : prev));
+            setActiveSession((prev) => (prev && prev.id === currentSelectedId ? { ...prev, promptSuggestion: msg.promptSuggestion || prev.promptSuggestion } : prev));
           }
           if (['thought', 'message', 'toolCall', 'toolCallUpdate'].includes(msg.event || msg.type)) {
-            setActiveSession((prev) => (prev && prev.id === selectedId && prev.state !== 'working' ? { ...prev, state: 'working' } : prev));
+            setActiveSession((prev) => (prev && prev.id === currentSelectedId && prev.state !== 'working' ? { ...prev, state: 'working' } : prev));
           }
           if (['turnCompleted', 'sessionStopped', 'sessionStarted', 'sessionSwitched', 'sessionCompacted', 'sessionRollback', 'backgroundSettled', 'resumed'].includes(msg.event || msg.type)) {
             if (msg.event === 'turnCompleted' || msg.type === 'turnCompleted') {
-              setActiveSession((prev) => (prev && prev.id === selectedId ? { ...prev, state: 'needs_you' } : prev));
+              setActiveSession((prev) => (prev && prev.id === currentSelectedId ? { ...prev, state: 'needs_you' } : prev));
             }
-            fetchSessionDetail(selectedId);
+            fetchSessionDetail(currentSelectedId);
             fetchSessions();
           }
         }
       } else if (['permissionRequested', 'permissionResolved', 'elicitationRequested', 'elicitationResolved'].includes(msg.type)) {
-        if (selectedId && msg.sessionId === selectedId) {
-          fetchSessionDetail(selectedId);
+        if (currentSelectedId && msg.sessionId === currentSelectedId) {
+          fetchSessionDetail(currentSelectedId);
           fetchSessions();
         }
       } else if (msg.type === 'claudeRateLimits' && msg.rateLimits) {
@@ -286,7 +321,8 @@ export const App: React.FC = () => {
         wasOffline = false;
         setOffline(false);
         fetchSessions();
-        if (selectedId) fetchSessionDetail(selectedId);
+        const currentSelectedId = selectedIdRef.current;
+        if (currentSelectedId) fetchSessionDetail(currentSelectedId);
       }
     }, (code) => {
       // This device's access was revoked from the host: back to the pair screen at once
@@ -301,7 +337,7 @@ export const App: React.FC = () => {
     return () => {
       ws.close();
     };
-  }, [selectedId, fetchSessionDetail, fetchSessions]);
+  }, [fetchSessionDetail, fetchSessions]);
 
   // A pairing request lasts five minutes; so does its toast
   useEffect(() => {
@@ -319,7 +355,10 @@ export const App: React.FC = () => {
   }, []);
 
   const goHome = useCallback(() => {
+    selectedIdRef.current = null;
+    detailRequestRef.current?.abort();
     setSelectedId(null);
+    setActiveSession(null);
     setMobileView('list');
   }, []);
 
@@ -352,14 +391,11 @@ export const App: React.FC = () => {
       const idx = order.indexOf(deletedId);
       const remaining = order.filter((id) => id !== deletedId);
       const next = remaining[Math.min(Math.max(idx, 0), remaining.length - 1)] ?? null;
-      setSelectedId(next);
-      if (!next) {
-        setActiveSession(null);
-        setMobileView('list');
-      }
+      if (next) selectSession(next);
+      else goHome();
       fetchSessions();
     },
-    [fetchSessions]
+    [fetchSessions, goHome, selectSession]
   );
 
   // Keyboard navigation shortcuts
@@ -416,7 +452,7 @@ export const App: React.FC = () => {
             ? idx === -1 || idx === order.length - 1 ? 0 : idx + 1
             : idx <= 0 ? order.length - 1 : idx - 1;
         const nextId = order[nextIdx];
-        setSelectedId(nextId);
+        selectSession(nextId);
         document.querySelector(`[data-session-id="${CSS.escape(nextId)}"]`)?.scrollIntoView({ block: 'nearest' });
       } else if (e.key === 'Enter' && selectedId) {
         setMobileView('session');
@@ -429,7 +465,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedId, activeSession, anyModalOpen, showPalette, openNewSession, annotate]);
+  }, [selectedId, activeSession, anyModalOpen, showPalette, openNewSession, annotate, selectSession]);
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
     const list: PaletteAction[] = [];
@@ -576,10 +612,7 @@ export const App: React.FC = () => {
       <Sidebar
         sessions={sessions}
         selectedId={selectedId}
-        onSelectSession={(id) => {
-          setSelectedId(id);
-          setMobileView('session');
-        }}
+        onSelectSession={selectSession}
         onGoHome={goHome}
         onOpenNewModal={() => openNewSession()}
         onOpenPalette={() => setShowPalette(true)}
@@ -592,7 +625,7 @@ export const App: React.FC = () => {
         onReturnToActiveSession={() => setMobileView('session')}
       />
 
-      {activeSession && selectedId ? (
+      {activeSession?.id === selectedId ? (
         <ErrorBoundary resetKey={activeSession.id} onLeave={{ label: 'Go to home', run: goHome }}>
           <SessionDetail
             session={activeSession}
@@ -608,10 +641,7 @@ export const App: React.FC = () => {
             onDeleted={handleDeleted}
             totalSessionsCount={sessions.length}
             allSessions={sessions}
-            onSelectSession={(id) => {
-              setSelectedId(id);
-              setMobileView('session');
-            }}
+            onSelectSession={selectSession}
           />
         </ErrorBoundary>
       ) : selectedId ? (
@@ -621,10 +651,7 @@ export const App: React.FC = () => {
           <HomeDashboard
             sessions={sessions}
             agents={agents}
-            onSelectSession={(id) => {
-              setSelectedId(id);
-              setMobileView('session');
-            }}
+            onSelectSession={selectSession}
             onNewSession={openNewSession}
             onOpenPalette={() => setShowPalette(true)}
           />
@@ -667,8 +694,7 @@ export const App: React.FC = () => {
           onCreated={(newId) => {
             setShowNewModal(false);
             fetchSessions().then(() => {
-              setSelectedId(newId);
-              setMobileView('session');
+              selectSession(newId);
             });
           }}
         />
@@ -682,8 +708,7 @@ export const App: React.FC = () => {
           onSwitched={(newId) => {
             setShowSwitchModal(false);
             fetchSessions().then(() => {
-              setSelectedId(newId);
-              setMobileView('session');
+              selectSession(newId);
             });
           }}
         />
@@ -695,10 +720,7 @@ export const App: React.FC = () => {
           currentSessionId={selectedId}
           actions={paletteActions}
           onClose={() => setShowPalette(false)}
-          onSelectSession={(id) => {
-            setSelectedId(id);
-            setMobileView('session');
-          }}
+          onSelectSession={selectSession}
         />
       )}
 
@@ -706,8 +728,7 @@ export const App: React.FC = () => {
         <SubscriptionsUsageModal
           onClose={() => setShowSubscriptionsModal(false)}
           onSelectSession={(id) => {
-            setSelectedId(id);
-            setMobileView('session');
+            selectSession(id);
             setShowSubscriptionsModal(false);
           }}
         />

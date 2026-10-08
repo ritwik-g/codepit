@@ -83,7 +83,7 @@ export const api = {
     request<{ ecosystems: EcosystemReport[] }>(`/api/mcp/ecosystems${refresh ? '?refresh=1' : ''}`),
   getAgents: () => request<{ agents: AgentDescriptor[] }>('/api/agents'),
   getSessions: () => request<{ sessions: SessionSummary[] }>('/api/sessions'),
-  getSession: (id: string) => request<{ session: AcpSession }>(`/api/sessions/${id}`),
+  getSession: (id: string, signal?: AbortSignal) => request<{ session: AcpSession }>(`/api/sessions/${id}`, { signal }),
   getWorkflowRun: (id: string, taskId: string) =>
     request<{ run: WorkflowRunInfo | null }>(`/api/sessions/${id}/tasks/${encodeURIComponent(taskId)}/workflow`),
   getWorkflowAgent: (id: string, taskId: string, agentId: string) =>
