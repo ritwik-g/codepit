@@ -211,7 +211,7 @@ export function editDiff(call: ToolCallRecord): { path?: string; hunks: DiffHunk
 }
 
 /** Line diff that keeps a shared prefix and suffix as context and marks the middle as removed/added. */
-function diffLines(before: string, after: string): DiffLine[] {
+export function diffLines(before: string, after: string): DiffLine[] {
   const a = before === '' ? [] : before.split('\n');
   const b = after === '' ? [] : after.split('\n');
   let start = 0;

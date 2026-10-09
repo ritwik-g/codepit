@@ -185,6 +185,8 @@ export interface ToolCallRecord {
   status: 'pending' | 'running' | 'completed' | 'failed';
   input?: unknown;
   output?: string;
+  /** File change payloads reported by ACP tool-call content. */
+  diffs?: Array<{ path: string; oldText?: string | null; newText: string }>;
   error?: string;
   startedAt: number;
   completedAt?: number;

@@ -1318,6 +1318,11 @@ function toolCallFields(update: any): Partial<ToolCallRecord> {
   return {
     kind: update.kind,
     input,
+    diffs: Array.isArray(update.content)
+      ? update.content
+          .filter((item: any) => item?.type === 'diff' && typeof item.path === 'string' && typeof item.newText === 'string')
+          .map((item: any) => ({ path: item.path, oldText: item.oldText, newText: item.newText }))
+      : undefined,
     toolName: claude.toolName || update.name,
     description: typeof claude.title === 'string' ? claude.title : input?.description,
     parentToolUseId: claude.parentToolUseId,

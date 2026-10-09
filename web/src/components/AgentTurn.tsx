@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ToolCallRecord, TurnMessage, TurnSegment } from '../types';
 import { MarkdownContent } from './MarkdownContent';
+import { ContentViewer, type ContentViewerDiff } from './ContentViewer';
 import { Badge, Button, Icon, IconButton, Spinner, type Tone } from '../ui';
 import { BackgroundBadge } from './BackgroundBadge';
 import { useOpenAgentTask } from './agentTaskNav';
@@ -10,6 +11,7 @@ import {
   commandOf,
   copyToClipboard,
   describeTool,
+  diffLines,
   durationLabel,
   editDiff,
   formatDuration,
@@ -292,18 +294,20 @@ export const IoPanel: React.FC<{
   label: React.ReactNode;
   copy?: string;
   tone?: 'danger';
+  onView?: () => void;
   children: React.ReactNode;
-}> = ({ label, copy, tone, children }) => (
+}> = ({ label, copy, tone, onView, children }) => (
   <div className={`io-panel${tone ? ` is-${tone}` : ''}`}>
     <div className="io-panel-head">
       <span className="io-panel-label">{label}</span>
+      {onView && <Button variant="ghost" size="sm" onClick={onView}>View</Button>}
       {copy != null && <CopyButton text={copy} label="Copy" />}
     </div>
     <pre className="io-panel-body">{children}</pre>
   </div>
 );
 
-const DiffView: React.FC<{ diff: NonNullable<ReturnType<typeof editDiff>> }> = ({ diff }) => {
+const DiffView: React.FC<{ diff: NonNullable<ReturnType<typeof editDiff>>; onView?: () => void }> = ({ diff, onView }) => {
   const lines = diff.hunks.flatMap((h) => h.lines);
   const added = lines.filter((l) => l.type === 'add').length;
   const removed = lines.filter((l) => l.type === 'del').length;
@@ -320,6 +324,7 @@ const DiffView: React.FC<{ diff: NonNullable<ReturnType<typeof editDiff>> }> = (
           <span className="diff-stat-add">+{added}</span>
           <span className="diff-stat-del">−{removed}</span>
         </span>
+        {onView && <Button variant="ghost" size="sm" onClick={onView}>View</Button>}
         <CopyButton text={newText} label="Copy new text" />
       </div>
       <div className="diff-body">
@@ -351,6 +356,7 @@ export const ToolRow: React.FC<{ call: ToolCallRecord; awaitingApproval?: boolea
   interrupted,
 }) => {
   const [open, setOpen] = useState(false);
+  const [viewer, setViewer] = useState<{ path?: string; text?: string; diff?: ContentViewerDiff } | null>(null);
   const d = describeTool(call, interrupted);
   const asked = call.elicitation;
   // A question's own card has the answers as its output, which the answer list already shows
@@ -358,9 +364,10 @@ export const ToolRow: React.FC<{ call: ToolCallRecord; awaitingApproval?: boolea
   const input = toolInput(call);
   const isCommand = d.icon === 'terminal';
   const command = isCommand ? commandOf(call) : undefined;
-  const diff = editDiff(call);
+  const nativeDiffs = call.diffs || [];
+  const diff = nativeDiffs.length ? null : editDiff(call);
   const extraInput = Object.keys(input).some((k) => !QUIET_KEYS.has(k));
-  const hasDetail = Boolean(output || call.error || command || diff || (!isCommand && extraInput));
+  const hasDetail = Boolean(output || call.error || command || diff || nativeDiffs.length || (!isCommand && extraInput));
   const duration = durationLabel(call);
   const failedExit = call.exitCode != null && call.exitCode !== 0;
   const failed = isFailed(call);
@@ -433,14 +440,25 @@ export const ToolRow: React.FC<{ call: ToolCallRecord; awaitingApproval?: boolea
               ) : null}
             </IoPanel>
           )}
-          {diff && <DiffView diff={diff} />}
+          {diff && <DiffView diff={diff} onView={() => setViewer({ path: diff.path, diff: {
+            path: diff.path,
+            oldText: diff.hunks.flatMap((h) => h.lines.filter((line) => line.type !== 'add').map((line) => line.text)).join('\n'),
+            newText: diff.hunks.flatMap((h) => h.lines.filter((line) => line.type !== 'del').map((line) => line.text)).join('\n'),
+          } })} />}
+          {nativeDiffs.map((fileDiff, index) => (
+            <DiffView
+              key={`${fileDiff.path}-${index}`}
+              diff={{ path: fileDiff.path, hunks: [{ lines: diffLines(fileDiff.oldText || '', fileDiff.newText) }] }}
+              onView={() => setViewer({ diff: fileDiff })}
+            />
+          ))}
           {!isCommand && !diff && extraInput && (
             <IoPanel label="Input" copy={JSON.stringify(call.input, null, 2)}>
               {JSON.stringify(call.input, null, 2)}
             </IoPanel>
           )}
           {!isCommand && output && (
-            <IoPanel label="Output" copy={output}>
+            <IoPanel label="Output" copy={output} onView={() => setViewer({ path: String(input.file_path || input.path || input.notebook_path || ''), text: output })}>
               <OutputText text={output} />
             </IoPanel>
           )}
@@ -451,6 +469,7 @@ export const ToolRow: React.FC<{ call: ToolCallRecord; awaitingApproval?: boolea
           )}
         </div>
       )}
+      {viewer && <ContentViewer {...viewer} onClose={() => setViewer(null)} />}
     </div>
   );
 };
