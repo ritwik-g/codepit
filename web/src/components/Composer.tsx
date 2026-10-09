@@ -59,6 +59,7 @@ export const Composer: React.FC<{
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Where to put the caret once a text change made here has rendered
   const pendingCaretRef = useRef<number | null>(null);
+  const pendingSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const slashMenuRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
 
@@ -92,6 +93,13 @@ export const Composer: React.FC<{
   }, [promptText, inputRef]);
 
   useLayoutEffect(() => {
+    const selection = pendingSelectionRef.current;
+    if (selection) {
+      pendingSelectionRef.current = null;
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(selection.start, selection.end);
+      return;
+    }
     const pos = pendingCaretRef.current;
     if (pos === null) return;
     pendingCaretRef.current = null;
@@ -104,6 +112,44 @@ export const Composer: React.FC<{
     pendingCaretRef.current = pos;
     setPromptText(next);
     setCaret(pos);
+  };
+
+  /** Add Markdown around the current selection, or select a useful placeholder. */
+  const formatSelection = (before: string, after: string, placeholder: string) => {
+    const ta = inputRef.current;
+    const start = ta?.selectionStart ?? caret;
+    const end = ta?.selectionEnd ?? caret;
+    const selected = promptText.slice(start, end) || placeholder;
+    const next = promptText.slice(0, start) + before + selected + after + promptText.slice(end);
+    const selection = { start: start + before.length, end: start + before.length + selected.length };
+    pendingSelectionRef.current = selection;
+    setPromptText(next);
+    setCaret(selection.end);
+  };
+
+  const insertCodeBlock = () => {
+    const ta = inputRef.current;
+    const start = ta?.selectionStart ?? caret;
+    const end = ta?.selectionEnd ?? caret;
+    const selected = promptText.slice(start, end) || 'your code here';
+    const insertion = `\n\`\`\`\n${selected}\n\`\`\`\n`;
+    const next = promptText.slice(0, start) + insertion + promptText.slice(end);
+    const contentStart = start + 5;
+    pendingSelectionRef.current = { start: contentStart, end: contentStart + selected.length };
+    setPromptText(next);
+    setCaret(contentStart + selected.length);
+  };
+
+  const insertMermaidBlock = () => {
+    const template = '\n```mermaid\nflowchart TD\n  A[Start] --> B[Next step]\n```\n';
+    const ta = inputRef.current;
+    const start = ta?.selectionStart ?? caret;
+    const end = ta?.selectionEnd ?? caret;
+    const next = promptText.slice(0, start) + template + promptText.slice(end);
+    const contentStart = start + template.indexOf('flowchart');
+    pendingSelectionRef.current = { start: contentStart, end: contentStart + 'flowchart TD\n  A[Start] --> B[Next step]'.length };
+    setPromptText(next);
+    setCaret(contentStart + 'flowchart TD\n  A[Start] --> B[Next step]'.length);
   };
 
   const availableSlashCommands = useMemo(
@@ -399,6 +445,16 @@ export const Composer: React.FC<{
             disabled={sending}
             aria-label="Message"
           />
+
+          <div className="ws-format-toolbar" role="toolbar" aria-label="Markdown formatting">
+            <button type="button" className="ws-format-btn is-strong" title="Bold" aria-label="Bold" onMouseDown={(e) => e.preventDefault()} onClick={() => formatSelection('**', '**', 'bold text')}>B</button>
+            <button type="button" className="ws-format-btn is-italic" title="Italic" aria-label="Italic" onMouseDown={(e) => e.preventDefault()} onClick={() => formatSelection('*', '*', 'italic text')}>I</button>
+            <button type="button" className="ws-format-btn is-mono" title="Inline code" aria-label="Inline code" onMouseDown={(e) => e.preventDefault()} onClick={() => formatSelection('`', '`', 'code')}>{'<>'}</button>
+            <button type="button" className="ws-format-btn" title="Code block" aria-label="Insert code block" onMouseDown={(e) => e.preventDefault()} onClick={insertCodeBlock}>Code block</button>
+            <button type="button" className="ws-format-btn" title="Mermaid diagram" aria-label="Insert Mermaid diagram" onMouseDown={(e) => e.preventDefault()} onClick={insertMermaidBlock}>Diagram</button>
+            <button type="button" className="ws-format-btn" title="Math formula" aria-label="Insert math formula" onMouseDown={(e) => e.preventDefault()} onClick={() => formatSelection('$', '$', 'x + y = z')}>Math</button>
+            <button type="button" className="ws-format-btn" title="Link" aria-label="Insert link" onMouseDown={(e) => e.preventDefault()} onClick={() => formatSelection('[', '](https://)', 'link text')}>Link</button>
+          </div>
 
           <div className="ws-composer-toolbar">
             <div className="ws-composer-tools">

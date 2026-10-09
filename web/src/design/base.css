@@ -179,6 +179,46 @@ svg {
   overflow-x: auto;
 }
 
+.md-math {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md-math-display {
+  margin: 0.9em 0;
+  text-align: center;
+}
+
+.md-math.is-error {
+  color: var(--danger);
+  font-family: var(--font-mono);
+}
+
+.md-mermaid {
+  display: flex;
+  justify-content: center;
+  max-width: 100%;
+  margin: 0.9em 0;
+  padding: var(--space-4);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.md-mermaid svg {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+}
+
+.md-mermaid-error {
+  justify-content: flex-start;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
 .prose table {
   width: 100%;
   border-collapse: collapse;

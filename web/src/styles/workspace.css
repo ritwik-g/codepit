@@ -1221,6 +1221,50 @@
   opacity: 0.6;
 }
 
+.ws-format-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 10px 7px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ws-format-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.ws-format-btn {
+  flex: 0 0 auto;
+  min-height: 25px;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: 1.2;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.ws-format-btn:hover,
+.ws-format-btn:focus-visible {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.ws-format-btn.is-strong {
+  font-weight: 700;
+}
+
+.ws-format-btn.is-italic {
+  font-style: italic;
+}
+
+.ws-format-btn.is-mono {
+  font-family: var(--font-mono);
+}
+
 .ws-composer-toolbar {
   display: flex;
   align-items: center;
