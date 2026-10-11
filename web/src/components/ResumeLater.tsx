@@ -6,7 +6,7 @@ import { Modal } from './Modal';
 import { atHour, toLocalInput, whenLabel } from './SessionOrganize';
 import { shortTime } from './Sidebar';
 
-// A session that sends a message by itself later: after Claude's 5-hour usage limit resets,
+// A session that sends a message by itself later: after the agent's usage limit resets,
 // or at a time the user picked when pausing it. The server keeps the time, so it resumes
 // with this view closed and after a restart.
 
@@ -37,9 +37,11 @@ function useNow(everyMs = 30_000): number {
 /** The card above the composer while the session waits to resume. */
 export const ResumeBanner: React.FC<{
   sessionId: string;
+  /** "Claude Code", "Codex CLI": who hit the limit. */
+  agentName: string;
   resume: ScheduledResume;
   onPickTime: () => void;
-}> = ({ sessionId, resume, onPickTime }) => {
+}> = ({ sessionId, agentName, resume, onPickTime }) => {
   const now = useNow();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -67,18 +69,18 @@ export const ResumeBanner: React.FC<{
   let text: React.ReactNode;
   if (limit && resume.armed) {
     kicker = 'Usage limit reached';
-    text = due ? <>The 5-hour limit has reset. Resuming…</> : <>Claude hit its 5-hour limit. CodePit resumes this session at {when} {sends}</>;
+    text = due ? <>The usage limit has reset. Resuming…</> : <>{agentName} hit its usage limit. CodePit resumes this session at {when} {sends}</>;
   } else if (limit && at !== undefined) {
     kicker = 'Usage limit reached';
     text =
       at <= now ? (
-        <>Claude hit its 5-hour limit, which has reset since. Resume now?</>
+        <>{agentName} hit its usage limit, which has reset since. Resume now?</>
       ) : (
-        <>Claude hit its 5-hour limit, which resets at {shortTime(resume.resetsAt ?? at)}. Resume then?</>
+        <>{agentName} hit its usage limit, which resets at {shortTime(resume.resetsAt ?? at)}. Resume then?</>
       );
   } else if (limit) {
     kicker = 'Usage limit reached';
-    text = <>Claude hit its usage limit.</>;
+    text = <>{agentName} hit its usage limit.</>;
   } else {
     kicker = 'Paused';
     text = due ? <>Resuming…</> : <>Resumes at {when} {sends}</>;
@@ -111,7 +113,7 @@ export const ResumeBanner: React.FC<{
         <div className="ws-approval-kicker">{kicker}</div>
         <div className="ws-restore-text">{text}</div>
         {resume.note && <div className="ws-resume-note">{resume.note}</div>}
-        {limit && resume.limitMessage && <div className="ws-resume-note">Claude said: {resume.limitMessage}</div>}
+        {limit && resume.limitMessage && <div className="ws-resume-note">{agentName} said: {resume.limitMessage}</div>}
         {error && <div className="ws-restore-error">{error}</div>}
       </div>
       <div className="ws-approval-actions">
@@ -257,7 +259,7 @@ const MODE_OPTIONS: Array<{ value: LimitResumeMode; label: string; title: string
   { value: 'auto', label: 'Resume automatically', title: 'Send “Continue” by itself once the limit resets' },
 ];
 
-/** What every session does when Claude hits its 5-hour limit. */
+/** What every session does when Claude or Codex hits its 5-hour limit. */
 export const LimitResumeSetting: React.FC = () => {
   const [mode, setMode] = useState<LimitResumeMode | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -277,8 +279,8 @@ export const LimitResumeSetting: React.FC = () => {
   };
   return (
     <div className="limit-resume-setting">
-      <span className="acct-mode-label">When the 5-hour limit is hit</span>
-      {mode && <Segmented<LimitResumeMode> size="sm" label="When the 5-hour limit is hit" value={mode} onChange={change} options={MODE_OPTIONS} />}
+      <span className="acct-mode-label">When Claude or Codex hits its 5-hour limit</span>
+      {mode && <Segmented<LimitResumeMode> size="sm" label="When Claude or Codex hits its 5-hour limit" value={mode} onChange={change} options={MODE_OPTIONS} />}
       {error && <div className="acct-inline-error">{error}</div>}
     </div>
   );

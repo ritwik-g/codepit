@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { ensurePrivateDir, getAppDir, getSettingsFile, FILE_MODE } from './paths.js';
 import type { LimitResumeMode, ScheduledResume } from './types.js';
 
-// Resuming a session later: after Claude stops a turn on its 5-hour usage limit, or at a
+// Resuming a session later: after an agent stops on its 5-hour usage limit, or at a
 // time the user picked when pausing it. What is sent is an ordinary message, so the agent
 // session carries on with everything it had.
 
@@ -36,29 +36,57 @@ export interface RejectedLimit {
   seenAt: number;
 }
 
-// Claude Code's usage-limit messages (the SDK's USAGE_LIMIT_ERROR_PREFIXES, plus the
-// older "Claude AI usage limit reached|<epoch seconds>")
+// Usage-limit messages: Claude Code's (the SDK's USAGE_LIMIT_ERROR_PREFIXES, plus the older
+// "Claude AI usage limit reached|<epoch seconds>") and Codex's ("You've hit your usage limit.
+// … try again at 4:59 PM.")
 const LIMIT_RE = /(You['’]ve hit your|You['’]ve reached your|You['’]re out of (?:usage credits|extra usage)|Your org is out of usage|Your seat type doesn['’]t include|Your usage allocation has been disabled|Your group['’]s usage limit|requires usage credits|usage limit reached)/i;
 
-/** Claude's usage-limit message in an error's text, or null when the error is something else. */
+/** An agent's usage-limit message in an error's text, or null when the error is something else. */
 export function parseUsageLimit(text: string | undefined | null, now = Date.now()): UsageLimitHit | null {
   if (!text) return null;
   const found = LIMIT_RE.exec(text);
   if (!found) return null;
   const message = text.slice(found.index).trim();
+  // Which limit is in the first sentence; what follows can be an upsell ("purchase more credits")
+  const headline = message.split(/[.·|\n]/)[0];
   let window: LimitWindow = 'unknown';
-  if (/credits|extra usage|org is out|seat type|allocation|usage limit is set/i.test(message)) window = 'credits';
-  else if (/\bweek(ly)?\b|\b(opus|sonnet|fable|haiku)\b[^·|]*limit/i.test(message)) window = 'weekly';
-  else if (/session limit|5[- ]hour|five[- ]hour/i.test(message)) window = 'five_hour';
+  if (/credits|extra usage|org is out|seat type|allocation|usage limit is set/i.test(headline)) window = 'credits';
+  else if (/\bweek(ly)?\b|\b(opus|sonnet|fable|haiku)\b[^·|]*limit/i.test(headline)) window = 'weekly';
+  else if (/session limit|5[- ]hour|five[- ]hour/i.test(headline)) window = 'five_hour';
   const epoch = /\|\s*(\d{10,13})\b/.exec(message);
-  const resetsAt = epoch
-    ? Number(epoch[1]) * (epoch[1].length === 10 ? 1000 : 1)
-    : parseResetTime(/resets?\s+(?:at\s+)?([^\n]+)/i.exec(message)?.[1] || '', now);
+  const resetText = /(?:resets?|try again)\s+(?:at\s+|on\s+)?([^\n]+)/i.exec(message)?.[1] || '';
+  const resetsAt = epoch ? Number(epoch[1]) * (epoch[1].length === 10 ? 1000 : 1) : parseResetTime(resetText, now) ?? parseResetDelay(resetText, now);
   return { window, message, ...(resetsAt ? { resetsAt } : {}) };
 }
 
+/**
+ * A limit notice the agent wrote as a message rather than failing the turn with it: Claude
+ * does this for a turn it started on its own (a background task finishing), Codex for any.
+ * Only a short message that is nothing but the notice counts, so prose that mentions a limit
+ * does not.
+ */
+export function limitNoticeInText(text: string | undefined | null, now = Date.now()): UsageLimitHit | null {
+  // The notice is its own message, sometimes repeated; the last paragraph is enough
+  const last = (text || '').trim().split(/\n\s*\n/).pop()?.trim() || '';
+  if (!last || last.length > 600) return null;
+  const hit = parseUsageLimit(last, now);
+  return hit && hit.message === last ? hit : null;
+}
+
+/** "in 2 hours 13 minutes", "in 45 min", "in 3 days": a reset given as a wait. */
+function parseResetDelay(text: string, now: number): number | undefined {
+  const m = /^in\s+((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m)\b[\s,and]*)+)/i.exec(text.trim());
+  if (!m) return undefined;
+  let ms = 0;
+  for (const [, n, unit] of m[1].matchAll(/(\d+)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m)\b/gi)) {
+    const u = unit.toLowerCase();
+    ms += Number(n) * (u.startsWith('d') ? 24 * 60 * 60_000 : u.startsWith('h') ? 60 * 60_000 : 60_000);
+  }
+  return ms > 0 ? now + ms : undefined;
+}
+
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-const RESET_RE = /(?:\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b(?:\s*\(([^)]+)\))?/i;
+const RESET_RE = /(?:\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(\d{4}),?\s+)?(?:at\s+)?)?\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b(?:\s*\(([^)]+)\))?/i;
 
 function validZone(tz: string | undefined): string | undefined {
   if (!tz) return undefined;
@@ -100,7 +128,7 @@ function fromWallClock(y: number, mo: number, d: number, h: number, mi: number, 
 export function parseResetTime(text: string, now = Date.now(), defaultZone = Intl.DateTimeFormat().resolvedOptions().timeZone): number | undefined {
   const m = RESET_RE.exec(text);
   if (!m) return undefined;
-  const [, mon, day, hour, minute, ampm, zone] = m;
+  const [, mon, day, year, hour, minute, ampm, zone] = m;
   const h12 = Number(hour);
   if (h12 < 1 || h12 > 12) return undefined;
   const h = (h12 % 12) + (ampm.toLowerCase() === 'pm' ? 12 : 0);
@@ -110,6 +138,7 @@ export function parseResetTime(text: string, now = Date.now(), defaultZone = Int
   const today = wallClock(now, tz);
   if (mon) {
     const mo = MONTHS.indexOf(mon.toLowerCase());
+    if (year) return fromWallClock(Number(year), mo, Number(day), h, mi, tz);
     let at = fromWallClock(today.y, mo, Number(day), h, mi, tz);
     // "Jan 2" seen in late December is next year's
     if (at < now - 180 * 24 * 60 * 60_000) at = fromWallClock(today.y + 1, mo, Number(day), h, mi, tz);
@@ -133,7 +162,7 @@ export interface LimitResumeInput {
 }
 
 /**
- * What to do about a turn Claude stopped on a usage limit: a resume to schedule (armed under
+ * What to do about a turn an agent stopped on a usage limit: a resume to schedule (armed under
  * "Auto", waiting for a yes under "Ask"), or null when the setting is off or the limit is
  * not the 5-hour one.
  */
@@ -163,7 +192,7 @@ export function decideLimitResume({ hit, mode, now, rejected, fiveHourResetsAt, 
     ...(tooMany
       ? { note: `It resumed ${streak} times and hit the limit again straight away each time, so it waits for you now.` }
       : !at
-        ? { note: 'Claude did not say when the limit resets. Pick a time to resume.' }
+        ? { note: 'The agent did not say when the limit resets. Pick a time to resume.' }
         : {}),
   };
 }
@@ -184,7 +213,7 @@ export function isLimitResumeMode(v: unknown): v is LimitResumeMode {
   return v === 'off' || v === 'ask' || v === 'auto';
 }
 
-/** What to do when Claude hits its 5-hour limit, for every session; kept in settings.json. */
+/** What to do when Claude or Codex hits its 5-hour limit, for every session; kept in settings.json. */
 export function readLimitResumeMode(): LimitResumeMode {
   try {
     const parsed = JSON.parse(fs.readFileSync(getSettingsFile(), 'utf8'));

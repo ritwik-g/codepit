@@ -471,7 +471,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
               onAnswered={onRefresh}
             />
           ) : scheduledResume && session.state !== 'working' ? (
-            <ResumeBanner key={session.id} sessionId={session.id} resume={scheduledResume} onPickTime={() => setShowResumeAt(true)} />
+            <ResumeBanner key={session.id} sessionId={session.id} agentName={session.agentName} resume={scheduledResume} onPickTime={() => setShowResumeAt(true)} />
           ) : (
             restorable &&
             summary && <RestoreSessionBanner key={session.id} summary={summary} queuedCount={session.queuedPrompts?.length ?? 0} />

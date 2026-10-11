@@ -16,7 +16,7 @@ import { getUploadsDir } from '../paths.js';
 import { getClaudeRateLimits, onClaudeRateLimitsChanged, refreshClaudeRateLimitsAsync, updateClaudeRateLimitsFromSdk } from '../subscriptions.js';
 import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, rememberAgentOptions, resolveModelValue } from './agent-options.js';
 import { logQueueEvent } from '../queue-log.js';
-import { decideLimitResume, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit } from '../limit-resume.js';
+import { decideLimitResume, limitNoticeInText, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit, type UsageLimitHit } from '../limit-resume.js';
 import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
 import type { AcpSession, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
@@ -195,6 +195,8 @@ export class RestoreError extends Error {
 const QUICK_REPEAT_MS = 10 * 60_000;
 /** Agents a scheduled resume starts per poll; ones already running are sent at once. */
 const RESUME_STARTS_PER_TICK = 3;
+/** How long an agent-started turn's text stays quiet before it is checked for a limit notice. */
+const LIMIT_NOTICE_QUIET_MS = 3000;
 
 export class ScheduleError extends Error {
   constructor(message: string, public readonly status: 404 | 409) {
@@ -234,6 +236,10 @@ export class SessionManager extends EventEmitter {
   private unsubscribeRateLimits?: () => void;
   /** Claude's last rate-limit event this turn that said a window is used up. */
   private rejectedLimits = new Map<string, RejectedLimit>();
+  /** A turn the agent started itself is checked for a limit notice once its text goes quiet. */
+  private limitNoticeTimers = new Map<string, NodeJS.Timeout>();
+  /** Why each due resume was last held back, so the log says it once rather than every tick. */
+  private resumeHeldBack = new Map<string, string>();
 
   constructor() {
     super();
@@ -887,6 +893,8 @@ export class SessionManager extends EventEmitter {
       const latest = (turn.segments!.filter((seg) => seg.kind === 'text').pop() as { text: string } | undefined)?.text || turn.content;
       s.recap = latest.trim().replace(/\s+/g, ' ').slice(0, 160) + (latest.length > 160 ? '…' : '');
       this.emit('sessionStream', { sessionId: s.id, type: 'message', text, turn: withoutToolCalls(turn) });
+      // A turn CodePit sent is checked when it ends; one the agent started itself has no end to wait for
+      if (!this.activePrompts.has(s.id)) this.checkLimitNoticeSoon(s.id);
     });
 
     host.on('toolCall', (record: ToolCallRecord) => {
@@ -1301,6 +1309,14 @@ export class SessionManager extends EventEmitter {
       const { stopReason } = await host.sendPrompt(promptToSendToHost, savedAttachments);
       turnStopReason = stopReason;
       endedCleanly = stopReason === 'end_turn';
+      // The turn can end normally with the limit notice as its reply (Codex does; so does Claude at times)
+      const ended = store.get(sessionId);
+      const notice = ended && this.activePrompts.get(sessionId) === seq ? limitNoticeInText(lastAgentText(ended)) : null;
+      if (ended && notice) {
+        endedCleanly = false;
+        this.parkOnUsageLimit(ended, notice);
+        store.save(ended, { now: true });
+      }
       if (endedCleanly) {
         const s = store.get(sessionId);
         if (s && (s.limitResumeStreak || s.limitResumeSentAt)) {
@@ -1328,7 +1344,8 @@ export class SessionManager extends EventEmitter {
         } else if (!lastTurn.content) {
           lastTurn.content = `⚠️ ${err.message || 'The agent encountered an error processing your request.'}`;
         }
-        this.parkOnUsageLimit(s, err?.message);
+        const hit = parseUsageLimit(err?.message) ?? limitNoticeInText(lastAgentText(s));
+        if (hit) this.parkOnUsageLimit(s, hit);
         store.save(s, { now: true });
       }
     } finally {
@@ -1546,12 +1563,13 @@ export class SessionManager extends EventEmitter {
    * Claude stopped the turn on a usage limit: under "Ask" or "Auto", keep a resume for when
    * the 5-hour window resets. The caller saves the session and tells the views.
    */
-  private parkOnUsageLimit(s: AcpSession, errorText?: string): void {
+  private parkOnUsageLimit(s: AcpSession, hit: UsageLimitHit): void {
     const now = Date.now();
     const rejected = this.rejectedLimits.get(s.id);
     this.rejectedLimits.delete(s.id);
-    const hit = parseUsageLimit(errorText, now);
-    if (!hit) return;
+    // The same notice seen again (an error and its text, or a repeated message): already handled
+    if (s.scheduledResume?.reason === 'limit' && s.scheduledResume.limitMessage === hit.message && now - s.scheduledResume.createdAt < 10 * 60_000) return;
+    const claude = isClaudeSession(s);
     // A limit hit soon after a resume means the reset time was wrong; one after real work is a new window
     const quickRepeat = s.limitResumeSentAt !== undefined && now - s.limitResumeSentAt < QUICK_REPEAT_MS;
     s.limitResumeStreak = quickRepeat ? (s.limitResumeStreak ?? 0) + 1 : 0;
@@ -1562,13 +1580,14 @@ export class SessionManager extends EventEmitter {
       mode: readLimitResumeMode(),
       now,
       rejected,
-      fiveHourResetsAt: getClaudeRateLimits().fiveHour?.resetsAtMs,
+      // Claude's account-wide 5-hour window says nothing about another agent's limit
+      fiveHourResetsAt: claude ? getClaudeRateLimits().fiveHour?.resetsAtMs : undefined,
       streak: s.limitResumeStreak ?? 0,
     });
     if (!resume) return;
     s.scheduledResume = resume;
     console.log(`[session-mgr] ${s.id} hit the usage limit; ${resume.armed ? `resumes at ${new Date(resume.at!).toISOString()}` : 'resume offered'}`);
-    if (resume.at) return;
+    if (resume.at || !claude) return;
     // No reset time in the message or the events: Claude's /usage may know it
     refreshClaudeRateLimitsAsync()
       .then((limits) => {
@@ -1584,6 +1603,29 @@ export class SessionManager extends EventEmitter {
         this.emit('sessionsUpdated', this.listSessions());
       })
       .catch(() => {});
+  }
+
+  /**
+   * A turn the agent started on its own (Claude after a background task finished) can hit
+   * the limit too, and says so only in its text. Check once the text has gone quiet.
+   */
+  private checkLimitNoticeSoon(sessionId: string): void {
+    clearTimeout(this.limitNoticeTimers.get(sessionId));
+    const timer = setTimeout(() => {
+      this.limitNoticeTimers.delete(sessionId);
+      // A message CodePit sent since then is checked when its turn ends
+      if (this.activePrompts.has(sessionId)) return;
+      const s = store.get(sessionId);
+      const hit = s ? limitNoticeInText(lastAgentText(s)) : null;
+      if (!s || !hit) return;
+      const before = s.scheduledResume;
+      this.parkOnUsageLimit(s, hit);
+      if (s.scheduledResume === before) return;
+      store.save(s, { touch: false, now: true });
+      this.emit('sessionsUpdated', this.listSessions());
+    }, LIMIT_NOTICE_QUIET_MS);
+    timer.unref();
+    this.limitNoticeTimers.set(sessionId, timer);
   }
 
   /**
@@ -1645,12 +1687,30 @@ export class SessionManager extends EventEmitter {
     let starts = 0;
     for (const s of store.getAll()) {
       const r = s.scheduledResume;
-      if (!r?.armed || r.at === undefined || r.at > now || s.user.cleanup) continue;
+      if (!r?.armed || r.at === undefined || r.at > now) continue;
+      // Held back: said once per reason in the log, so a resume that is late can be explained
+      const heldBack = (reason: string) => {
+        if (this.resumeHeldBack.get(s.id) === reason) return;
+        this.resumeHeldBack.set(s.id, reason);
+        console.log(`[session-mgr] Resume of ${s.id} due at ${new Date(r.at!).toISOString()} held back: ${reason}`);
+      };
+      if (s.user.cleanup) {
+        heldBack('marked for cleanup');
+        continue;
+      }
       // A turn the user started in the meantime: try again once it ends
-      if (this.isTurnInFlight(s.id) || this.restoring.has(s.id)) continue;
+      if (this.isTurnInFlight(s.id) || this.restoring.has(s.id)) {
+        heldBack(this.restoring.has(s.id) ? 'being restored' : this.activePrompts.has(s.id) ? 'a message is being sent' : 'the agent is in a turn');
+        continue;
+      }
       // Starting many agents at once stalls the machine (after a restart, say): a few per tick
       const needsStart = !this.activeHosts.has(s.id);
-      if (needsStart && starts >= RESUME_STARTS_PER_TICK) continue;
+      if (needsStart && starts >= RESUME_STARTS_PER_TICK) {
+        heldBack('waiting for other agents to start');
+        continue;
+      }
+      this.resumeHeldBack.delete(s.id);
+      console.log(`[session-mgr] Resuming ${s.id} (${r.reason}, due at ${new Date(r.at).toISOString()})`);
       if (this.sendScheduledResume(s.id)) {
         due.push(s.id);
         if (needsStart) starts++;
@@ -1675,7 +1735,7 @@ export class SessionManager extends EventEmitter {
     s.turns.push({
       id: `sys-${now}-resumed`,
       role: 'system',
-      content: resume.reason === 'limit' ? 'The 5-hour usage limit reset, so the session resumed.' : 'Resumed at the time you picked.',
+      content: resume.reason === 'limit' ? 'The usage limit reset, so the session resumed.' : 'Resumed at the time you picked.',
       timestamp: now,
     });
     store.save(s, { touch: false });
@@ -3635,4 +3695,19 @@ export function adoptClaudeSession(s: AcpSession, excludeTurnId?: string): strin
     }
   }
   return undefined;
+}
+
+/** The text of the latest agent reply, where a limit notice would be. */
+function lastAgentText(s: AcpSession): string | undefined {
+  for (let i = s.turns.length - 1; i >= 0; i--) {
+    const t = s.turns[i];
+    if (t.role === 'agent') return t.content;
+    if (t.role === 'user') return undefined;
+  }
+  return undefined;
+}
+
+/** Claude's limits are the ones its rate-limit events and /usage describe. */
+function isClaudeSession(s: AcpSession): boolean {
+  return s.agentId === 'claude' || getAgent(s.agentId)?.provider === 'anthropic';
 }

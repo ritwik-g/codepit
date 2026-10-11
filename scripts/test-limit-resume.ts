@@ -22,7 +22,7 @@ process.env.CODEPIT_APP_DIR = testAppDir;
 process.env.CODEPIT_CLAUDE_USAGE_CMD = 'echo';
 fs.mkdirSync(stateDir, { recursive: true });
 
-const { parseUsageLimit, parseResetTime, decideLimitResume, parseScheduleRequest, readLimitResumeMode, RESUME_PROMPT, RESUME_BUFFER_MS, MAX_LIMIT_STREAK } = await import('../server/limit-resume.js');
+const { parseUsageLimit, parseResetTime, limitNoticeInText, decideLimitResume, parseScheduleRequest, readLimitResumeMode, RESUME_PROMPT, RESUME_BUFFER_MS, MAX_LIMIT_STREAK } = await import('../server/limit-resume.js');
 const { sessionManager } = await import('../server/acp/session-mgr.js');
 const { AGENT_REGISTRY } = await import('../server/agents/registry.js');
 const { store } = await import('../server/store.js');
@@ -111,6 +111,17 @@ function pure(): void {
   check('no time, nothing', parseResetTime('soon', now) === undefined);
   const twoLines = parseUsageLimit("You've hit your session limit · resets 3pm (UTC)\n/upgrade to increase your usage limit.", now);
   check('a reset on a line before others', twoLines?.resetsAt === Date.parse('2026-10-07T15:00:00Z'), twoLines);
+  const codex = parseUsageLimit('You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 4:59 PM.', now);
+  check('Codex: the upsell does not make it a credits limit', codex?.window === 'unknown', codex);
+  check('Codex: "try again at 4:59 PM"', codex?.resetsAt === parseResetTime('4:59 PM', now), codex?.resetsAt);
+  const codexAuto = decideLimitResume({ hit: codex!, mode: 'auto', now, streak: 0 });
+  const within = codex!.resetsAt! - now <= 5 * HOUR + 15 * MIN;
+  check('Codex: resumed when it resets within a 5-hour window', within ? codexAuto?.armed === true : codexAuto === null, codexAuto);
+  check('a dated reset with a year', parseUsageLimit("You've hit your usage limit. Try again at Oct 14th, 2026 9:00 AM (UTC).", now)?.resetsAt === Date.parse('2026-10-14T09:00:00Z'));
+  check('a reset given as a wait', parseUsageLimit("You've hit your usage limit. Try again in 2 hours 13 minutes.", now)?.resetsAt === now + 2 * HOUR + 13 * MIN);
+  check('a notice as the last message of a reply', limitNoticeInText("Done with the table.\n\nYou've hit your session limit · resets 2am (Asia/Calcutta)", now)?.window === 'five_hour');
+  check('prose that mentions a limit is not a notice', limitNoticeInText("I think you've hit your limit on retries, so I stopped.", now) === null);
+  check('a long message is not a notice', limitNoticeInText("You've hit your session limit · resets 2am. " + 'x'.repeat(700), now) === null);
 
   console.log('2. What a limit hit leads to');
   const hit = five!;
@@ -217,6 +228,23 @@ async function main(): Promise<void> {
   sessionManager.setLimitResumeMode('auto');
   await send(e, 'hit-weekly');
   check('a weekly limit is not resumed', resumeOf(e) === null && /weekly limit/.test(lastOf(e, 'agent')?.content || ''));
+
+  console.log('6a. A limit notice in the reply rather than an error');
+  const t1 = await newSession();
+  await send(t1, "say-limit:You've hit your session limit · resets 3:40pm (UTC)");
+  check('a turn that ends normally with the notice is resumed', resumeOf(t1)?.armed === true && resumeOf(t1)?.reason === 'limit', resumeOf(t1));
+  const t2 = await newSession();
+  await send(t2, 'say-limit:You’ve hit your usage limit. Upgrade to Pro, visit the settings to purchase more credits or try again in 2 hours.');
+  const r2 = resumeOf(t2);
+  check('Codex\'s notice, with its wait', r2?.armed === true && Math.abs(r2.at! - (Date.now() + 2 * HOUR + RESUME_BUFFER_MS)) < 30_000, r2);
+  const t3 = await newSession();
+  await send(t3, "say-limit:I think you've hit your limit on retries, so I stopped.");
+  check('prose about a limit is left alone', resumeOf(t3) === null);
+  const t4 = await newSession();
+  await send(t4, "later-limit:You've hit your session limit · resets 3:40pm (UTC)");
+  check('nothing yet while the agent works on its own', resumeOf(t4) === null);
+  check('a turn the agent started itself, ending on the notice, is resumed', await waitFor(() => resumeOf(t4)?.armed === true, 8000), resumeOf(t4));
+  for (const id of [t1, t2, t4]) sessionManager.cancelScheduledResume(id);
 
   console.log('6b. A stop, a switch away or cleanup drops the resume; Ask after the reset');
   const st = await newSession();

@@ -197,6 +197,21 @@ async function main() {
         throw acp.RequestError.internalError(undefined, "You've hit your session limit · resets 3:40pm (UTC)");
       }
       if (text.includes('hit-weekly')) throw acp.RequestError.internalError(undefined, "You've hit your weekly limit · resets Oct 9, 10am (UTC)");
+      // A limit notice as the reply of a turn that ends normally ("say-limit:<notice>"), or in a
+      // turn the agent starts by itself a moment later ("later-limit:<notice>")
+      const said = /say-limit:(.+)$/s.exec(text);
+      if (said) {
+        await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: said[1] } });
+        return { stopReason: 'end_turn' };
+      }
+      const later = /later-limit:(.+)$/s.exec(text);
+      if (later) {
+        setTimeout(() => {
+          void send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: later[1] } });
+        }, 200);
+        await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'started a background task' } });
+        return { stopReason: 'end_turn' };
+      }
       await send({
         sessionUpdate: 'agent_message_chunk',
         content: {
