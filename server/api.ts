@@ -20,6 +20,7 @@ import {
   getUsageSummary,
   calculateSessionCost,
   refreshClaudeRateLimitsAsync,
+  refreshAgyRateLimitsAsync,
 } from './subscriptions.js';
 import { lanAccess } from './lan.js';
 import { describeLanAddresses, getLanHostname } from './network.js';
@@ -807,7 +808,7 @@ apiRouter.post('/subscriptions/config', (req: Request, res: Response) => {
 // 16b. Refresh Provider Rate Limits on Demand
 apiRouter.post('/subscriptions/refresh-limits', async (_req: Request, res: Response) => {
   try {
-    await Promise.all([refreshClaudeRateLimitsAsync(), refreshCodexRateLimitsAsync()]);
+    await Promise.all([refreshClaudeRateLimitsAsync(), refreshCodexRateLimitsAsync(), refreshAgyRateLimitsAsync()]);
     res.json({ success: true, subscriptions: getVendorSubscriptions() });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to refresh limits' });

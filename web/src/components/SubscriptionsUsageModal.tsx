@@ -294,7 +294,9 @@ const VendorCard: React.FC<{
     rows.push(['App data', <code className="usg-mono">{d.appDataDir || '~/.gemini/antigravity-cli'}</code>]);
   }
 
-  const showLimits = (spec.key === 'anthropic' || spec.key === 'openai') && (hasRateLimits(sub?.rateLimits) || mode !== 'api_key');
+  const showLimits =
+    ((spec.key === 'anthropic' || spec.key === 'openai') && (hasRateLimits(sub?.rateLimits) || mode !== 'api_key')) ||
+    (spec.key === 'google' && mode !== 'api_key' && Boolean(d.agyFound));
 
   return (
     <Card className="acct-card" padding="none">
@@ -340,7 +342,9 @@ const VendorCard: React.FC<{
               <span>
                 {spec.key === 'openai'
                   ? 'No limit data yet. Refresh to read your usage windows and credits from Codex.'
-                  : 'No limit data yet. Refresh to read your 5-hour and weekly windows from Claude Code.'}
+                  : spec.key === 'google'
+                    ? 'No quota data yet. Refresh to read your 5-hour and weekly windows from agy.'
+                    : 'No limit data yet. Refresh to read your 5-hour and weekly windows from Claude Code.'}
               </span>
             </div>
           )}
@@ -846,9 +850,9 @@ export const SubscriptionsUsageModal: React.FC<SubscriptionsUsageModalProps> = (
                   onModeChange={(mode) => setModes((m) => ({ ...m, [spec.key]: mode }))}
                   apiKey={keys[spec.key]}
                   onApiKeyChange={(value) => setKeys((k) => ({ ...k, [spec.key]: value }))}
-                  {...(spec.key === 'anthropic'
-                    ? { refreshingLimits, refreshError, onRefreshLimits: handleRefreshLimits }
-                    : {})}
+                  refreshingLimits={refreshingLimits}
+                  refreshError={refreshError}
+                  onRefreshLimits={handleRefreshLimits}
                 />
               ))
             )}

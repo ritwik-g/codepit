@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { exec } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { getCredentialsFile, ensurePrivateDir, getAppDir, FILE_MODE } from './paths.js';
 import { store } from './store.js';
 import type { AcpSession } from './types.js';
 import { getCodexRateLimits } from './codex-limits.js';
 import { contextWindowHint } from './acp/agent-options.js';
 import { parseResetTime } from './limit-resume.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface VendorRateLimitWindow {
   utilization: number;
@@ -210,6 +213,8 @@ let cachedClaudeRateLimits: VendorRateLimits = {
   weeklyModels: [],
   updatedAt: 0,
 };
+let cachedAgyRateLimits: VendorRateLimits = { windows: [], updatedAt: 0 };
+let agyRefresh: Promise<VendorRateLimits> | null = null;
 let isRefreshingClaudeLimits = false;
 /** When `claude -p "/usage"` last ran. Kept apart from updatedAt: an agent's own rate-limit
  * events often carry no percentage, and must not make a stale number look fresh. */
@@ -292,6 +297,61 @@ export function parseClaudeUsageOutput(text: string): VendorRateLimits {
   }
 
   return result;
+}
+
+/** Parse the quota table printed by `agy -p "/usage"`. agy reports remaining, not used. */
+export function parseAgyUsageOutput(text: string): VendorRateLimits {
+  const windows: NonNullable<VendorRateLimits['windows']> = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.trim().match(/^(.+?)\s+(Weekly|Five Hour) Limit Remaining\s+(\d+(?:\.\d+)?)%\s+(.+)$/i);
+    if (!match) continue;
+
+    const remaining = Number(match[3]);
+    if (!Number.isFinite(remaining) || remaining < 0 || remaining > 100) continue;
+    const resetsAt = match[4].trim();
+    const resetMatch = resetsAt.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})\s+(IST)$/i);
+    let resetsAtMs: number | undefined;
+    if (resetMatch) {
+      // agy currently prints Indian Standard Time; parse it explicitly because Date.parse
+      // does not consistently recognize the IST abbreviation across runtimes.
+      resetsAtMs = Date.UTC(
+        Number(resetMatch[1]), Number(resetMatch[2]) - 1, Number(resetMatch[3]),
+        Number(resetMatch[4]), Number(resetMatch[5])
+      ) - 330 * 60_000;
+    } else {
+      const parsed = Date.parse(resetsAt);
+      if (Number.isFinite(parsed)) resetsAtMs = parsed;
+    }
+
+    const pool = match[1].trim();
+    const period = match[2].toLowerCase() === 'weekly' ? 'Weekly' : '5-hour';
+    windows.push({
+      name: `${pool}, ${period} window`,
+      utilization: Math.round(100 - remaining),
+      ...(resetsAtMs ? { resetsAtMs } : {}),
+    });
+  }
+  return { windows, updatedAt: Date.now() };
+}
+
+/** Ask agy for the signed-in account's quota table. `/usage` is informational. */
+export function refreshAgyRateLimitsAsync(): Promise<VendorRateLimits> {
+  agyRefresh ??= (async () => {
+    const localAgy = path.join(os.homedir(), '.local', 'bin', 'agy');
+    const bin = process.env.AGY_PATH || (fs.existsSync(localAgy) ? localAgy : 'agy');
+    try {
+      const { stdout } = await execFileAsync(bin, ['-p', '/usage'], { timeout: 15_000, maxBuffer: 1024 * 1024 });
+      const parsed = parseAgyUsageOutput(stdout);
+      if (parsed.windows?.length) cachedAgyRateLimits = parsed;
+      else console.warn('[subscriptions] agy /usage returned no quota windows');
+    } catch (err: any) {
+      console.error(`[subscriptions] agy quota refresh failed: ${err.message}`);
+    }
+    return cachedAgyRateLimits;
+  })().finally(() => {
+    agyRefresh = null;
+  });
+  return agyRefresh;
 }
 
 export function refreshClaudeRateLimitsAsync(): Promise<VendorRateLimits> {
@@ -494,6 +554,7 @@ export function getVendorSubscriptions(): Record<'anthropic' | 'openai' | 'googl
       agyPath: agyPath.startsWith(home) ? `~${agyPath.slice(home.length)}` : agyPath,
       appDataDir: '~/.gemini/antigravity-cli',
     },
+    rateLimits: hasAgy ? cachedAgyRateLimits : undefined,
   };
 
   return {
