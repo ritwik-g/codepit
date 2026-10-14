@@ -14,8 +14,8 @@ const CLAUDE_ACP_BIN = path.join(BIN_DIR, 'claude-agent-acp');
 const CODEX_ACP_BIN = path.join(BIN_DIR, 'codex-acp');
 
 const defaultClaudeModels = [
-  'sonnet',
   'opus',
+  'sonnet',
   'haiku',
   'claude-opus-4-6',
   'claude-opus-4-5',
@@ -66,7 +66,7 @@ export const AGENT_REGISTRY: Record<string, AgentDescriptor> = {
       : ['-y', '@agentclientprotocol/claude-agent-acp'],
     icon: 'claude',
     mcpSupport: { transports: ['stdio', 'http', 'sse'] },
-    defaultModel: 'sonnet',
+    defaultModel: 'opus',
     availableModels: parseEnvModels(process.env.CLAUDE_MODELS, defaultClaudeModels),
     efforts: claudeEfforts,
     slashCommands: [

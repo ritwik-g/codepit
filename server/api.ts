@@ -28,6 +28,7 @@ import { getUploadsDir } from './paths.js';
 import { devices } from './devices.js';
 import { isHostClient } from './security.js';
 import { mcpRouter } from './mcp/routes.js';
+import { agentBinary, agentVersionInfo, updateAgent } from './agent-versions.js';
 import { advertisedOptions, effortChoicesFor, effortError, isEffortValue, isFavoriteList, markNewModels, readFavoriteModels, writeFavoriteModels } from './acp/agent-options.js';
 import { refreshCodexRateLimitsAsync } from './codex-limits.js';
 import { readWorkflowAgent, readWorkflowRun } from './acp/workflow-run.js';
@@ -50,6 +51,26 @@ apiRouter.get('/agents', (req: Request, res: Response) => {
   const includeMock = req.query.includeMock === undefined ? undefined : req.query.includeMock === 'true';
   // With the effort and model choices each agent last advertised, so pickers show them before a session starts
   res.json({ agents: listAgents(includeMock).map((a) => ({ ...a, advertised: withNewModels(a.id, advertisedOptions(a.id)) })) });
+});
+
+// Installed and latest version of each agent's CLI; refresh=1 checks for a release again
+apiRouter.get('/agents/versions', async (req: Request, res: Response) => {
+  const refresh = req.query.refresh === '1';
+  const infos = await Promise.all(listAgents().map((a) => agentVersionInfo(a.id, refresh)));
+  res.json({ versions: Object.fromEntries(infos.filter((i) => i !== undefined).map((i) => [i.agentId, i])) });
+});
+
+// Run the agent CLI's own update; running agents keep their version until they next start
+apiRouter.post('/agents/:id/update', async (req: Request, res: Response) => {
+  if (!hasAgent(req.params.id) || !agentBinary(req.params.id)) {
+    res.status(404).json({ error: `No CLI to update for ${req.params.id}` });
+    return;
+  }
+  try {
+    res.json({ version: await updateAgent(req.params.id) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // The "New" badge is worked out when served, so a cached list does not keep it past two weeks
@@ -422,7 +443,7 @@ apiRouter.post('/sessions/:id/elicitation', (req: Request, res: Response) => {
 // 8. Failover / Switch agent
 apiRouter.post('/sessions/:id/switch', async (req: Request, res: Response) => {
   try {
-    const { targetAgentId, model, archivePrevious, inPlace, customPrompt, skipInitialPrompt, contextMode } = req.body;
+    const { targetAgentId, model, archivePrevious, inPlace, customPrompt, skipInitialPrompt, contextMode, fresh } = req.body;
     if (!targetAgentId) {
       res.status(400).json({ error: 'targetAgentId is required' });
       return;
@@ -438,6 +459,7 @@ apiRouter.post('/sessions/:id/switch', async (req: Request, res: Response) => {
       customPrompt: customPrompt ? String(customPrompt) : undefined,
       skipInitialPrompt: Boolean(skipInitialPrompt),
       contextMode,
+      fresh: Boolean(fresh),
     });
     res.json({ session: newSession });
   } catch (err: any) {

@@ -285,6 +285,8 @@ export interface AgentSessionRecord {
   agentId: string;
   agentName: string;
   model?: string;
+  /** The agent CLI's version when it last started or continued. */
+  version?: string;
   startedAt: number;
   /** When it was last started or continued; equals startedAt until it is resumed. */
   lastStartedAt: number;
@@ -800,4 +802,16 @@ export interface AgentTaskTextDelta {
   text: string;
   /** For a reply chunk: the spawning call, whose `subagentText` gets it too. */
   toolCallId?: string;
+}
+
+/** An agent CLI's installed and latest version (server/agent-versions.ts). */
+export interface AgentVersionInfo {
+  agentId: string;
+  binary: string;
+  installed?: string;
+  latest?: string;
+  channel?: string;
+  updateAvailable: boolean;
+  canUpdate: boolean;
+  error?: string;
 }

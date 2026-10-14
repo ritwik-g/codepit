@@ -2,6 +2,7 @@ import type {
   AcpSession,
   AutoCompactSetting,
   AgentDescriptor,
+  AgentVersionInfo,
   EcosystemReport,
   ElicitationAction,
   ElicitationValue,
@@ -185,6 +186,8 @@ export const api = {
       customPrompt?: string;
       skipInitialPrompt?: boolean;
       contextMode?: 'compact' | 'full' | 'none';
+      /** In place, same agent: start a fresh agent session instead of keeping the current one */
+      fresh?: boolean;
     }
   ) =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/switch`, {
@@ -238,6 +241,11 @@ export const api = {
   /** Set the agent session aside: the next message starts a new one, handed the conversation per contextMode. */
   forgetAgentSession: (id: string, contextMode: 'compact' | 'full' | 'none') =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/agent-session/forget`, { method: 'POST', body: JSON.stringify({ contextMode }) }),
+  /** Installed and latest version of each agent's CLI; refresh checks for a release again. */
+  getAgentVersions: (refresh = false) =>
+    request<{ versions: Record<string, AgentVersionInfo> }>(`/api/agents/versions${refresh ? '?refresh=1' : ''}`),
+  /** Run the agent CLI's own update. */
+  updateAgent: (agentId: string) => request<{ version?: AgentVersionInfo }>(`/api/agents/${agentId}/update`, { method: 'POST' }),
   setSessionFastMode: (id: string, enabled: boolean) =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/fast-mode`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
   /** Starred models, "<agentId>:<model>", shared by every device. */

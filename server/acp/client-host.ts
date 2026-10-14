@@ -12,10 +12,11 @@ import { appliesTo, listMcpServers, resolveSessionMcpServers } from '../mcp/conf
 import { syncAgyMcpQuietly } from '../mcp/agy-sync.js';
 import { effortToSend, launchModelValue, parseAgentOptions, resolveModelValue } from './agent-options.js';
 import { parseElicitationFields } from './elicitation.js';
+import { installedVersion } from '../agent-versions.js';
 
 /** `fallback` is what an id with no known Claude family becomes (a custom id can pass through). */
-export function normalizeClaudeModel(model?: string, fallback = 'sonnet'): string {
-  if (!model) return 'sonnet';
+export function normalizeClaudeModel(model?: string, fallback = 'opus'): string {
+  if (!model) return 'opus';
   const m = model.toLowerCase().trim();
   // Keep a context variant ("opus[1m]", "claude-sonnet-5-1m"): it picks the 1M window
   const hint = m.match(/^(.+?)(?:\[(\d+m)\]|-(\d+m))$/);
@@ -148,6 +149,8 @@ export class AcpClientHost extends EventEmitter {
   public canResume = false;
   /** True when start() continued resumeSessionId; resumeError says why it could not. */
   public resumed = false;
+  /** The version of the agent CLI this process runs, when it could be read. */
+  public agentVersion?: string;
   public resumeError?: string;
   /** The agent takes `_session/steering`: a message added to the running turn instead of stopping it. */
   public supportsSteering = false;
@@ -312,6 +315,8 @@ export class AcpClientHost extends EventEmitter {
       if (fs.existsSync(localClaude) && !env.CLAUDE_CODE_EXECUTABLE) {
         env.CLAUDE_CODE_EXECUTABLE = localClaude;
       }
+      // Claude Code turns its Artifact tool off for SDK launches unless asked; the user's own 0 still wins
+      env.CLAUDE_CODE_ARTIFACT ??= '1';
     } else if (this.model) {
       env.OPENAI_MODEL = this.model;
       env.GEMINI_MODEL = this.model;
@@ -333,6 +338,9 @@ export class AcpClientHost extends EventEmitter {
     // Effort goes through the agent's own config option after session/new, so it can
     // change without a restart. (A MAX_THINKING_TOKENS budget here would pin Claude's
     // thinking, and current Claude models reject a fixed budget outright.)
+
+    // Read before the start, so an update installed meanwhile is not credited to this process
+    this.agentVersion = await installedVersion(this.agent.id).catch(() => undefined);
 
     this.child = spawn(cmd, this.agent.args, {
       cwd: this.cwd,

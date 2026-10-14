@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { AcpSession, AgentSessionRecord } from '../types';
+import type { AcpSession, AgentSessionRecord, AgentVersionInfo } from '../types';
 import { api } from '../api';
 import { Badge, Button, EmptyState, Segmented } from '../ui';
 import { cx, formatTime } from './sessionMeta';
@@ -67,6 +67,8 @@ export const AgentSessionsPanel: React.FC<{
           </p>
         </header>
 
+        <AgentVersionSection session={session} records={records} />
+
         <section className="agent-sessions-fresh" aria-label="Start fresh">
           <div className="agent-sessions-fresh-text">
             <strong>Start fresh</strong>
@@ -111,6 +113,100 @@ export const AgentSessionsPanel: React.FC<{
   );
 };
 
+/**
+ * The agent CLI's installed version, whether a newer one is out, and its own update command.
+ * The agent runs the installed CLI, so an update reaches this conversation when its agent next
+ * starts; stopping it and sending a message continues the same agent session on the new one.
+ */
+const AgentVersionSection: React.FC<{ session: AcpSession; records: AgentSessionRecord[] }> = ({ session, records }) => {
+  const [info, setInfo] = useState<AgentVersionInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [updatedTo, setUpdatedTo] = useState<string | null>(null);
+
+  const load = async (refresh: boolean) => {
+    setChecking(true);
+    setError(null);
+    try {
+      const { versions } = await api.getAgentVersions(refresh);
+      setInfo(versions[session.agentId] ?? null);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    setInfo(null);
+    setUpdatedTo(null);
+    load(false);
+  }, [session.agentId]);
+
+  const update = async () => {
+    setUpdating(true);
+    setError(null);
+    try {
+      const { version } = await api.updateAgent(session.agentId);
+      if (version) setInfo(version);
+      setUpdatedTo(version?.installed ?? null);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  if (!info && !error) return null;
+  const name = shortName(session.agentName);
+  const running = session.isAgentRunning ? records.find((r) => r.id === session.agentSessionId)?.version : undefined;
+  const behind = Boolean(running && info?.installed && running !== info.installed);
+  const status = !info?.installed
+    ? 'Installed version unknown.'
+    : info.updateAvailable
+    ? `${info.latest} is available${info.channel === 'stable' ? ' on the stable channel' : ''}.`
+    : info.latest
+    ? `Up to date${info.channel === 'stable' ? ' on the stable channel' : ''}.`
+    : 'CodePit cannot check this agent for a newer release; Update runs its own update command.';
+
+  return (
+    <section className="agent-sessions-fresh" aria-label="Agent version">
+      <div className="agent-sessions-fresh-text">
+        <strong>
+          {name} {info?.installed && <span className="mono">{info.installed}</span>}
+        </strong>
+        <span>{status}</span>
+      </div>
+      <div className="agent-sessions-fresh-actions">
+        <Button size="sm" variant="ghost" icon="refresh" onClick={() => load(true)} loading={checking} disabled={checking || updating}>
+          Check again
+        </Button>
+        {info?.canUpdate && (
+          <Button
+            size="sm"
+            variant={info.updateAvailable ? 'primary' : 'secondary'}
+            onClick={update}
+            loading={updating}
+            disabled={checking || updating}
+            title={`Runs ${info.binary} update`}
+          >
+            {updating ? 'Updating…' : 'Update'}
+          </Button>
+        )}
+      </div>
+      {updatedTo && <p className="agents-note">Now on {updatedTo}. New agent starts use it.</p>}
+      {behind && (
+        <p className="agents-note">
+          The running agent is on {running}. Stop it and send a message to move it to {info!.installed}: it continues the same agent
+          session, so nothing is lost.
+        </p>
+      )}
+      {(error || info?.error) && <p className="agents-note tone-warn">{error || info?.error}</p>}
+    </section>
+  );
+};
+
 const AgentSessionRow = React.forwardRef<
   HTMLLIElement,
   { record: AgentSessionRecord; current: boolean; continues: boolean; parked: boolean; focused: boolean }
@@ -120,6 +216,7 @@ const AgentSessionRow = React.forwardRef<
     { label: 'Started', node: exactTime(r.startedAt) },
   ];
   if (r.resumes > 0) rows.push({ label: 'Last continued', node: exactTime(r.lastStartedAt) });
+  if (r.version) rows.push({ label: 'Version', node: <span className="mono">{r.version}</span> });
   // A set-aside session is only paused, so it does not read as ended
   const endLabel = parked ? 'Set aside' : 'Ended';
   if (r.endedAt) rows.push({ label: endLabel, node: `${exactTime(r.endedAt)}${r.endReason ? ` · ${r.endReason}` : ''}` });

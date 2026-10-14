@@ -49,13 +49,14 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
   onClose,
   onSwitched,
 }) => {
-  const availableTargets = agents.filter((a) => a.id !== currentSession.agentId);
+  // The current agent is listed too: picking it starts a fresh session of it
+  const availableTargets = agents;
   const preferredTarget = currentSession.agentId === 'claude'
     ? (availableTargets.some((a) => a.id === 'antigravity') ? 'antigravity' : 'codex')
     : 'claude';
   const defaultTarget = availableTargets.some((a) => a.id === preferredTarget)
     ? preferredTarget
-    : (availableTargets[0]?.id || 'claude');
+    : (availableTargets.find((a) => a.id !== currentSession.agentId)?.id || availableTargets[0]?.id || 'claude');
   const [targetAgentId, setTargetAgentId] = useState<string>(defaultTarget);
   const currentTargetAgent = availableTargets.find((a) => a.id === targetAgentId) || availableTargets[0];
   const [targetModel, setTargetModel] = useState<string>(currentTargetAgent?.defaultModel || '');
@@ -81,6 +82,11 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
   }, [agents, currentSession.agentId]);
 
   useEffect(() => {
+    // A fresh session of the current agent keeps its model unless another is picked
+    if (targetAgentId === currentSession.agentId && currentSession.model) {
+      setTargetModel(currentSession.model);
+      return;
+    }
     if (currentTargetAgent?.defaultModel && (!targetModel || !currentTargetAgent.availableModels?.includes(targetModel))) {
       setTargetModel(currentTargetAgent.defaultModel);
     }
@@ -98,6 +104,7 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
         customPrompt: sendInitialPrompt ? customPrompt : undefined,
         skipInitialPrompt: !sendInitialPrompt,
         contextMode,
+        fresh: sameAgent,
       });
       onSwitched(res.session.id);
     } catch (err: any) {
@@ -107,6 +114,7 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
   };
 
   const targetName = currentTargetAgent ? agentDisplayName(currentTargetAgent) : 'another agent';
+  const sameAgent = targetAgentId === currentSession.agentId;
   const currentModelLabel = currentSession.model ? getModelMeta(currentSession.model).label : null;
   const goal = currentSession.lastPrompt || currentSession.recap;
   const git = currentSession.git;
@@ -114,6 +122,8 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
 
   const primaryLabel = loading
     ? inPlace ? 'Switching…' : 'Forking…'
+    : sameAgent
+    ? inPlace ? `Start a fresh ${targetName} session` : `Fork to a new ${targetName} session`
     : inPlace ? `Continue with ${targetName}` : `Fork to ${targetName}`;
 
   return (
@@ -122,7 +132,7 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
       size="md"
       icon="swap"
       heading="Switch agent"
-      description="Continue this session with another agent."
+      description="Continue this session with another agent, or a fresh session of this one."
       bodyClassName="sw-body"
       footerStart={
         promptEmpty ? (
@@ -196,7 +206,11 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
             icon={<Icon name="swap" size={15} />}
             title="Continue in this session"
             badge={<Badge tone="accent">Recommended</Badge>}
-            description="Same thread and history. The new agent picks up where this one stopped."
+            description={
+              sameAgent
+                ? `Same thread and history. A new ${targetName} session picks up, handed the context below.`
+                : 'Same thread and history. The new agent picks up where this one stopped.'
+            }
           />
           <ChoiceCard
             selected={!inPlace}

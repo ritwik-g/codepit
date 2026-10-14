@@ -354,6 +354,8 @@ export interface AgentSessionRecord {
   agentId: string;
   agentName: string;
   model?: string;
+  /** The agent CLI's version when it last started or continued (a continued session moves to the installed one). */
+  version?: string;
   startedAt: number;
   /** When it was last started or continued; equals startedAt until it is resumed. */
   lastStartedAt: number;

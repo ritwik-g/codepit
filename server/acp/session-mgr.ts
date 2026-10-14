@@ -2239,9 +2239,10 @@ export class SessionManager extends EventEmitter {
     // Any still marked open were cut off without a stop (CodePit itself was restarted)
     for (const r of records) if (r.id !== id && !r.endedAt && !r.endReason) r.endReason = 'Ended when CodePit restarted';
     const model = host.options?.currentModel ?? s.model;
+    const version = host.agentVersion;
     const known = id ? records.find((r) => r.id === id) : undefined;
     if (known && host.resumed) {
-      Object.assign(known, { lastStartedAt: now, resumes: known.resumes + 1, model });
+      Object.assign(known, { lastStartedAt: now, resumes: known.resumes + 1, model, ...(version ? { version } : {}) });
       delete known.endedAt;
       delete known.endReason;
     } else if (id) {
@@ -2250,6 +2251,7 @@ export class SessionManager extends EventEmitter {
         agentId: s.agentId,
         agentName: s.agentName,
         model,
+        ...(version ? { version } : {}),
         startedAt: now,
         lastStartedAt: now,
         resumes: host.resumed ? 1 : 0,
@@ -2680,10 +2682,21 @@ export class SessionManager extends EventEmitter {
       customPrompt?: string;
       skipInitialPrompt?: boolean;
       contextMode?: ContextTransferMode;
+      /** In place, same agent: start a fresh agent session. Without it a same-agent switch is a model change */
+      fresh?: boolean;
     }
   ): Promise<AcpSession> {
     if (opts?.inPlace) {
-      const session = await this.setSessionAgent(sessionId, targetAgentId, opts.model, undefined, opts.contextMode);
+      // Asked for a fresh session of the same agent: set its agent session aside and start a new
+      // one, handed the conversation as chosen (a model change is applied once the old one is gone)
+      const fresh = Boolean(opts.fresh) && store.get(sessionId)?.agentId === targetAgentId;
+      let session = fresh
+        ? await this.forgetAgentSession(sessionId, opts.contextMode)
+        : await this.setSessionAgent(sessionId, targetAgentId, opts.model, undefined, opts.contextMode);
+      if (fresh && opts.model) {
+        const model = targetAgentId === 'claude' ? normalizeClaudeModel(opts.model, opts.model) : opts.model;
+        if (model !== session.model) session = await this.setSessionAgent(sessionId, targetAgentId, model, undefined, opts.contextMode);
+      }
       if (!opts?.skipInitialPrompt) {
         const continuationPrompt =
           opts?.customPrompt ||
