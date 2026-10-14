@@ -998,6 +998,23 @@
 /* ========================================================= Question card */
 
 /* A form the agent asks the user to fill in: the approval card's frame, with fields */
+.ws-approval.ws-ask {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.ws-ask-toggle {
+  align-self: start;
+}
+
+/* Minimised: the header alone, its message cut to a line */
+.ws-ask.is-collapsed .ws-ask-message {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+}
+
 .ws-ask-message {
   margin-top: 2px;
   color: var(--text);

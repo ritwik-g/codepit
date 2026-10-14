@@ -1,7 +1,7 @@
 import React, { useId, useState } from 'react';
 import type { ElicitationField, ElicitationOption, ElicitationValue, PendingElicitation } from '../types';
 import { api } from '../api';
-import { Badge, Button, ChoiceCard, Field, Icon, Input, Kbd, Switch, Textarea } from '../ui';
+import { Badge, Button, ChoiceCard, Field, Icon, IconButton, Input, Kbd, Switch, Textarea } from '../ui';
 import { MarkdownContent } from './MarkdownContent';
 import { MOD_KEY } from './Sidebar';
 import { answerError, companionOf, constraintHint, fieldLabel, ownValue, toLocalDateTime } from '../elicitation';
@@ -67,6 +67,8 @@ export const ElicitationCard: React.FC<{
   const [showErrors, setShowErrors] = useState(false);
   const [busy, setBusy] = useState<'accept' | 'decline' | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
+  // Folded down to its header so the conversation above can be read; answers so far are kept
+  const [collapsed, setCollapsed] = useState(false);
 
   const setDraft = (key: string, d: Draft) => setDrafts((prev) => ({ ...prev, [key]: d }));
   const setMode = (key: string, m: CustomMode | undefined) => setModes((prev) => ({ ...prev, [key]: m }));
@@ -343,7 +345,7 @@ export const ElicitationCard: React.FC<{
   const topLevel = fields.filter((f) => !ownerOf(f));
 
   return (
-    <section className="ws-approval ws-ask" aria-label="The agent has a question" onKeyDown={onKeyDown}>
+    <section className={`ws-approval ws-ask${collapsed ? ' is-collapsed' : ''}`} aria-label="The agent has a question" onKeyDown={onKeyDown}>
       <span className="ws-approval-icon" aria-hidden>
         <Icon name="help" size={16} />
       </span>
@@ -353,46 +355,58 @@ export const ElicitationCard: React.FC<{
         </div>
         <div className="ws-ask-message">{elicitation.message}</div>
       </div>
-      {topLevel.length > 0 && <div className="ws-ask-fields">{topLevel.map(renderField)}</div>}
-      <div className="ws-ask-foot">
-        {serverError ? (
-          <div className="ws-ask-error" role="alert">
-            {serverError}
+      <IconButton
+        icon={collapsed ? 'chevronUp' : 'chevronDown'}
+        label={collapsed ? 'Expand the question' : 'Minimise the question'}
+        size="sm"
+        className="ws-ask-toggle"
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((c) => !c)}
+      />
+      {!collapsed && (
+        <>
+          {topLevel.length > 0 && <div className="ws-ask-fields">{topLevel.map(renderField)}</div>}
+          <div className="ws-ask-foot">
+            {serverError ? (
+              <div className="ws-ask-error" role="alert">
+                {serverError}
+              </div>
+            ) : showErrors && errorCount > 0 ? (
+              <div className="ws-ask-error" role="alert">
+                {errorCount === 1 ? Object.values(errors)[0] : `${errorCount} answers need a look`}
+              </div>
+            ) : (
+              <span className="ws-ask-hint">
+                <Kbd>{MOD_KEY}</Kbd>
+                <Kbd>Enter</Kbd> to submit
+              </span>
+            )}
+            <span className="ws-approval-main">
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="x"
+                loading={busy === 'decline'}
+                disabled={disabled && busy !== 'decline'}
+                onClick={() => send('decline')}
+                title="Tell the agent you'd rather not answer"
+              >
+                Skip
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                icon="check"
+                loading={busy === 'accept'}
+                disabled={disabled && busy !== 'accept'}
+                onClick={() => send('accept')}
+              >
+                Submit
+              </Button>
+            </span>
           </div>
-        ) : showErrors && errorCount > 0 ? (
-          <div className="ws-ask-error" role="alert">
-            {errorCount === 1 ? Object.values(errors)[0] : `${errorCount} answers need a look`}
-          </div>
-        ) : (
-          <span className="ws-ask-hint">
-            <Kbd>{MOD_KEY}</Kbd>
-            <Kbd>Enter</Kbd> to submit
-          </span>
-        )}
-        <span className="ws-approval-main">
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="x"
-            loading={busy === 'decline'}
-            disabled={disabled && busy !== 'decline'}
-            onClick={() => send('decline')}
-            title="Tell the agent you'd rather not answer"
-          >
-            Skip
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            icon="check"
-            loading={busy === 'accept'}
-            disabled={disabled && busy !== 'accept'}
-            onClick={() => send('accept')}
-          >
-            Submit
-          </Button>
-        </span>
-      </div>
+        </>
+      )}
     </section>
   );
 };
