@@ -3,6 +3,7 @@ import type { AcpSession, FileAttachment, TurnMessage } from '../types';
 import { Badge, Button, EmptyState, Icon, IconButton, Spinner } from '../ui';
 import { AgentTurnBody } from './AgentTurn';
 import { CompactionCard } from './CompactionCard';
+import { MarkdownContent } from './MarkdownContent';
 import { VendorIcon } from './VendorLogos';
 import { getModelMeta } from './AgentModelPicker';
 import { cx, formatBytes, formatTime, runningSubagents } from './sessionMeta';
@@ -168,7 +169,11 @@ const UserTurn: React.FC<{
     {turn.attachments && turn.attachments.length > 0 && (
       <TurnAttachments attachments={turn.attachments} onPreviewImage={onPreviewImage} />
     )}
-    {turn.content && <div className="ws-user-bubble">{turn.content}</div>}
+    {turn.content && (
+      <div className="ws-user-bubble">
+        <MarkdownContent content={turn.content} />
+      </div>
+    )}
   </div>
   );
 };

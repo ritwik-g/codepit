@@ -42,7 +42,9 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, class
     });
     // Keep math out of the Markdown parser; KaTeX markup is created only after the
     // untrusted Markdown has passed through the HTML allowlist sanitizer.
-    source = source.replace(/(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (match, display, inline) => {
+    // Inline `$...$` follows Pandoc's rule (no space inside either `$`, no digit
+    // after the closing one) so prices like "$5 and $10" stay plain text.
+    source = source.replace(/(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$(?!\s)([^$\n]+?)(?<![\s\\])\$(?!\d)/g, (match, display, inline) => {
       const token = `CODEPITMATH${nonce}${math.size}END`;
       math.set(token, { source: (display ?? inline).trim(), display: display !== undefined });
       return token;
