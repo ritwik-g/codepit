@@ -19,7 +19,7 @@ import { logQueueEvent } from '../queue-log.js';
 import { decideLimitResume, limitNoticeInText, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit, type UsageLimitHit } from '../limit-resume.js';
 import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
-import type { AcpSession, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
+import type { AcpSession, ContextSentRecord, PendingContext, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
 /**
  * Format conversation history into a structured briefing block for context transfer.
@@ -28,10 +28,17 @@ import type { AcpSession, LimitResumeMode, RestoreOffer, ParkedAgentResume, Agen
  * `catchUp` is for an agent session continued after other agents (`by`) handled the
  * conversation: the turns are only the ones it missed, and the header says so.
  */
-export function formatSessionHistory(
+export function formatSessionHistory(turns: TurnMessage[], opts?: HistoryOptions): string {
+  return buildSessionHistory(turns, opts).text;
+}
+
+type HistoryOptions = { compact?: boolean; maxTurns?: number; catchUp?: { by: string[] } };
+
+/** formatSessionHistory, with what the block covers: the turns it lists and whether it has the summary. */
+export function buildSessionHistory(
   turns: TurnMessage[],
-  opts?: { compact?: boolean; maxTurns?: number; catchUp?: { by: string[] } }
-): string {
+  opts?: HistoryOptions
+): { text: string; turnCount: number; includesSummary: boolean } {
   const compact = opts?.compact !== false;
   const maxTurns = opts?.maxTurns ?? (compact ? 6 : 4);
 
@@ -41,7 +48,7 @@ export function formatSessionHistory(
     (t) => (t.role === 'user' || t.role === 'agent') && (t.content || (t.toolCalls && t.toolCalls.length > 0))
   );
 
-  if (relevantTurns.length === 0 && !checkpoint) return '';
+  if (relevantTurns.length === 0 && !checkpoint) return { text: '', turnCount: 0, includesSummary: false };
 
   const slice = relevantTurns.slice(-maxTurns);
   const catchUpBy = opts?.catchUp && (opts.catchUp.by.length > 0 ? opts.catchUp.by.join(' and ') : 'another agent');
@@ -90,7 +97,7 @@ export function formatSessionHistory(
   }
 
   lines.push('---');
-  return lines.join('\n');
+  return { text: lines.join('\n'), turnCount: slice.length, includesSummary: Boolean(checkpoint) };
 }
 
 /** The model to stamp on an agent turn: the one the agent runs when it refused the chosen one. */
@@ -673,6 +680,8 @@ export class SessionManager extends EventEmitter {
     title?: string;
     model?: string;
     failoverFromId?: string;
+    /** A fork's handover, sent with the first prompt. */
+    pendingContext?: PendingContext;
     initialPrompt?: string;
     /** An existing conversation owned by this agent to continue in this new CodePit session. */
     importAgentSessionId?: string;
@@ -723,6 +732,7 @@ export class SessionManager extends EventEmitter {
       pendingPermission: null,
       turns: [],
       failoverFromId: opts.failoverFromId,
+      pendingContext: opts.pendingContext,
       // An imported conversation is deliberately only an agent resume, not a copy of its
       // transcript into CodePit. The source app remains the owner of that history.
       ...(importAgentSessionId
@@ -1293,18 +1303,32 @@ export class SessionManager extends EventEmitter {
       const promptWithAttachments = withKeywords(withAttachmentNotes(promptText, savedAttachments), keywords);
       let promptToSendToHost = promptWithAttachments;
       const current = store.get(sessionId);
+      let contextSent: Omit<ContextSentRecord, 'text'> | undefined;
       if (current?.contextHandoffPending) {
         const turns = handoffTurns(current, userTurn.id);
-        const historyBlock = formatSessionHistory(turns, {
-          compact: current.contextMode !== 'full',
-          catchUp: catchUpFor(current, turns),
-        });
-        if (historyBlock) {
-          promptToSendToHost = `${historyBlock}\n\n[Active User Request]\n${promptWithAttachments}`;
+        const catchUp = catchUpFor(current, turns);
+        const mode = current.contextMode === 'full' ? 'full' : 'compact';
+        const history = buildSessionHistory(turns, { compact: mode === 'compact', catchUp });
+        if (history.text) {
+          promptToSendToHost = `${history.text}\n\n[Active User Request]\n${promptWithAttachments}`;
+          contextSent = { reason: catchUp ? 'catch-up' : 'handoff', mode, turnCount: history.turnCount, includesSummary: history.includesSummary };
         }
         current.contextHandoffPending = false;
         delete current.catchUpAfterTurnId;
         store.save(current, { touch: false });
+      }
+      // A fork's handover goes with the first prompt the new session sends
+      if (current?.pendingContext) {
+        promptToSendToHost = `${current.pendingContext.text}\n\n[Active User Request]\n${promptToSendToHost}`;
+        contextSent = current.pendingContext.record;
+        delete current.pendingContext;
+      }
+      // Keep what the agent was handed on the turn, so it can be looked at later
+      const sentTurn = contextSent && current?.turns.find((t) => t.id === userTurn.id);
+      if (contextSent && sentTurn) {
+        sentTurn.contextSent = { ...contextSent, text: promptToSendToHost };
+        store.save(current!, { touch: false });
+        this.emit('sessionStream', { sessionId, type: 'turn', turn: sentTurn });
       }
       const { stopReason } = await host.sendPrompt(promptToSendToHost, savedAttachments);
       turnStopReason = stopReason;
@@ -2473,8 +2497,18 @@ export class SessionManager extends EventEmitter {
         // A freshly started agent has none of the conversation yet: give it what there is to summarise
         if (needsHistory) {
           const turns = handoffTurns(session, run.turnId);
-          const history = formatSessionHistory(turns, { compact: false, maxTurns: 20, catchUp: catchUpFor(session, turns) });
-          if (history) prompt = `${history}\n\n${prompt}`;
+          const history = buildSessionHistory(turns, { compact: false, maxTurns: 20, catchUp: catchUpFor(session, turns) });
+          if (history.text) {
+            prompt = `${history.text}\n\n${prompt}`;
+            // Kept on the card, so what the summary was written from can be looked at
+            const s = store.get(sessionId);
+            const card = s?.turns.find((t) => t.id === run.turnId);
+            if (s && card) {
+              card.contextSent = { reason: 'compaction', mode: 'full', text: prompt, turnCount: history.turnCount, includesSummary: history.includesSummary };
+              store.save(s, { touch: false });
+              this.emit('sessionStream', { sessionId, type: 'compaction', turn: card });
+            }
+          }
         }
         // The agent now has the history; the next prompt must not send it again
         const s = store.get(sessionId);
@@ -2668,6 +2702,24 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * The context a switch would hand over, for the switch dialog to show before it is made:
+   * a fork's handover, or (in place) what a new agent session gets with its next prompt.
+   * A switch back to an agent whose earlier session is continued gets only the turns it missed.
+   */
+  async previewContext(sessionId: string, opts: { mode: ContextTransferMode; fork: boolean }): Promise<Omit<ContextSentRecord, 'reason'> & { reason: ContextSentRecord['reason'] | 'none' }> {
+    const s = store.get(sessionId);
+    if (!s) throw new Error(`Session ${sessionId} not found`);
+    if (opts.fork) {
+      const handover = forkHandover(s, await getGitInfo(s.cwd), opts.mode);
+      return { ...handover.record, text: handover.text };
+    }
+    const mode = opts.mode === 'full' ? 'full' : 'compact';
+    if (opts.mode === 'none') return { reason: 'none', mode, text: '', turnCount: 0, includesSummary: false };
+    const history = buildSessionHistory(s.turns.slice(s.contextStartIndex ?? 0), { compact: mode === 'compact' });
+    return { reason: 'handoff', mode, text: history.text, turnCount: history.turnCount, includesSummary: history.includesSummary };
+  }
+
+  /**
    * Failover / Switch Agent:
    * Transfers active repository context, conversation history, and recap into a new session powered by targetAgentId,
    * or updates the session in-place if opts.inPlace is true.
@@ -2721,39 +2773,19 @@ export class SessionManager extends EventEmitter {
       store.save(current);
     }
 
-    // Synthesize context handoff prompt with structured conversation history
-    let initialPrompt: string | undefined = undefined;
-    if (!opts?.skipInitialPrompt) {
-      if (opts?.customPrompt) {
-        initialPrompt = opts.customPrompt;
-      } else {
-        const activeGoal = current.lastPrompt || current.recap || 'Continue the repository task';
-        const contextMode = opts?.contextMode || 'compact';
-        let historySection = '';
-        if (contextMode !== 'none') {
-          const formattedHistory = formatSessionHistory(current.turns, { compact: contextMode === 'compact' });
-          if (formattedHistory) {
-            historySection = `\n${formattedHistory}\n`;
-          }
-        }
-
-        initialPrompt = [
-          `[Agent Switch / Failover Handover]`,
-          `- Workspace: ${current.cwd}`,
-          `- Git branch: ${git?.branch || 'main'}, Uncommitted files: ${git?.uncommittedFiles || 0}`,
-          `- Previous Agent: ${current.agentName}${current.model ? ` (${current.model})` : ''}`,
-          `- Active Goal: "${activeGoal}"`,
-          historySection,
-          `Please proceed directly with addressing the active goal above. Do not perform exhaustive repo-wide scans unless directly relevant to this specific task.`
-        ].filter(Boolean).join('\n');
-      }
-    }
+    // The handover goes in front of the first prompt the new session sends, whichever it is:
+    // the continuation prompt, or the user's first message when none is sent now
+    const handover = forkHandover(current, git, opts?.contextMode || 'compact');
+    const initialPrompt = opts?.skipInitialPrompt
+      ? undefined
+      : opts?.customPrompt || 'Please proceed directly with addressing the active goal above. Do not perform exhaustive repo-wide scans unless directly relevant to this specific task.';
 
     const newSession = await this.createSession({
       agentId: targetAgentId,
       cwd: current.cwd,
       model: opts?.model,
       failoverFromId: current.id,
+      pendingContext: handover,
       initialPrompt,
     });
 
@@ -3291,6 +3323,35 @@ function dropParkedResumes(s: AcpSession, drop: (p: ParkedAgentResume) => boolea
   }
   s.parkedAgentResumes = s.parkedAgentResumes.filter((p) => !drop(p));
   if (s.parkedAgentResumes.length === 0) delete s.parkedAgentResumes;
+}
+
+/**
+ * What a session forked from `s` is handed: where the work is, who had it, the goal, and the
+ * conversation as `mode` asks ('none' gives no turns). A clean slate is respected; a pending
+ * catch-up is not, since the new agent has seen none of it.
+ */
+function forkHandover(s: AcpSession, git: { branch?: string; uncommittedFiles?: number } | null | undefined, mode: ContextTransferMode): PendingContext {
+  const activeGoal = s.lastPrompt || s.recap || 'Continue the repository task';
+  const history = mode === 'none' ? undefined : buildSessionHistory(s.turns.slice(s.contextStartIndex ?? 0), { compact: mode === 'compact' });
+  const text = [
+    `[Agent Switch / Failover Handover]`,
+    `- Workspace: ${s.cwd}`,
+    `- Git branch: ${git?.branch || 'main'}, Uncommitted files: ${git?.uncommittedFiles || 0}`,
+    `- Previous Agent: ${s.agentName}${s.model ? ` (${s.model})` : ''}`,
+    `- Active Goal: "${activeGoal}"`,
+    history?.text ? `\n${history.text}` : '',
+  ].filter(Boolean).join('\n');
+  return {
+    text,
+    record: {
+      reason: 'fork',
+      mode: mode === 'full' ? 'full' : 'compact',
+      turnCount: history?.turnCount ?? 0,
+      includesSummary: history?.includesSummary ?? false,
+      fromSessionId: s.id,
+      fromAgent: s.agentName,
+    },
+  };
 }
 
 /** Whether there is a conversation a new agent session needs to be handed. */

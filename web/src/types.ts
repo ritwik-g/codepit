@@ -226,6 +226,19 @@ export interface TurnMessage {
   compaction?: CompactionRecord;
   /** Claude keywords CodePit added to a user message it sent (ultrathink, ultracode). */
   keywords?: string[];
+  /** The conversation CodePit handed the agent with this turn (see server/types.ts). */
+  contextSent?: ContextSentRecord;
+}
+
+export interface ContextSentRecord {
+  reason: 'handoff' | 'catch-up' | 'fork' | 'compaction';
+  mode: 'compact' | 'full';
+  /** Exactly what the agent received, the prompt itself included. */
+  text: string;
+  turnCount: number;
+  includesSummary: boolean;
+  fromSessionId?: string;
+  fromAgent?: string;
 }
 
 export interface CompactionRecord {

@@ -4,6 +4,7 @@ import { Badge, Button, EmptyState, Icon, IconButton, Spinner } from '../ui';
 import { AgentTurnBody } from './AgentTurn';
 import { CompactionCard } from './CompactionCard';
 import { MarkdownContent } from './MarkdownContent';
+import { ContextSentChip } from './ContextSent';
 import { VendorIcon } from './VendorLogos';
 import { getModelMeta } from './AgentModelPicker';
 import { cx, formatBytes, formatTime, runningSubagents } from './sessionMeta';
@@ -162,6 +163,7 @@ const UserTurn: React.FC<{
           {k === 'ultracode' ? 'Ultracode' : 'Ultrathink'}
         </Badge>
       ))}
+      {turn.contextSent && <ContextSentChip context={turn.contextSent} />}
       <time className="ws-time" dateTime={new Date(turn.timestamp).toISOString()}>
         {formatTime(turn.timestamp)}
       </time>

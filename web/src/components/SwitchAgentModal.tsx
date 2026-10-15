@@ -5,6 +5,7 @@ import { Badge, Button, ChoiceCard, Icon, Switch, Textarea, type IconName } from
 import { Modal } from './Modal';
 import { AgentModelPicker, agentDisplayName, getModelMeta, onRadioGroupKeyDown } from './AgentModelPicker';
 import { VendorIcon } from './VendorLogos';
+import { ContextSentModal, type ContextPreview } from './ContextSent';
 
 interface SwitchAgentModalProps {
   currentSession: AcpSession;
@@ -19,14 +20,14 @@ const CONTEXT_OPTIONS: Array<{ value: ContextMode; title: string; description: s
   {
     value: 'compact',
     title: 'Summary',
-    description: 'Earlier turns, decisions and edits, condensed.',
+    description: 'The last few turns, trimmed, after any compaction summary.',
     icon: 'layers',
     recommended: true,
   },
   {
     value: 'full',
     title: 'Recent messages',
-    description: 'The latest messages, word for word.',
+    description: 'The last few turns, word for word.',
     icon: 'message',
   },
   {
@@ -71,7 +72,22 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
   const [contextMode, setContextMode] = useState<ContextMode>('compact');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ context?: ContextPreview; error?: string } | null>(null);
   const uid = useId();
+
+  // What the agent would be handed, built by the server the same way the switch builds it
+  const showPreview = async () => {
+    setPreview({});
+    try {
+      const context = await api.previewContext(currentSession.id, contextMode, !inPlace);
+      const prompt = sendInitialPrompt ? customPrompt.trim() : '';
+      const request = prompt || (inPlace ? '(your next message)' : '(your first message)');
+      const text = context.text ? `${context.text}\n\n[Active User Request]\n${request}` : '';
+      setPreview({ context: { ...context, text } });
+    } catch (err: any) {
+      setPreview({ error: err.message || String(err) });
+    }
+  };
 
   useEffect(() => {
     if (availableTargets.length > 0 && !availableTargets.some((a) => a.id === targetAgentId)) {
@@ -317,10 +333,32 @@ export const SwitchAgentModal: React.FC<SwitchAgentModalProps> = ({
               <Icon name="layers" size={13} />
               History
             </dt>
-            <dd>{CONTEXT_LABEL[contextMode]}</dd>
+            <dd className="sw-summary-history">
+              <span>{CONTEXT_LABEL[contextMode]}</span>
+              <Button variant="ghost" size="sm" icon="eye" onClick={() => void showPreview()} disabled={loading}>
+                Preview
+              </Button>
+            </dd>
           </div>
         </dl>
       </section>
+      {preview && (
+        <ContextSentModal
+          nested
+          preview
+          context={preview.context}
+          loading={!preview.context && !preview.error}
+          error={preview.error}
+          note={
+            inPlace
+              ? `Sent in front of ${sendInitialPrompt ? 'the continuation prompt' : 'your next message'} when ${targetName} starts a new agent session.${
+                  sameAgent ? '' : ` If it continues an earlier ${targetName} session of this conversation, it gets only the turns it missed.`
+                }`
+              : `Sent to the new session in front of ${sendInitialPrompt ? 'the continuation prompt' : 'your first message'}.`
+          }
+          onClose={() => setPreview(null)}
+        />
+      )}
     </Modal>
   );
 };

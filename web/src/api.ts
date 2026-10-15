@@ -1,4 +1,5 @@
 import type {
+  ContextSentRecord,
   AcpSession,
   AutoCompactSetting,
   AgentDescriptor,
@@ -194,6 +195,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ targetAgentId, ...opts }),
     }),
+  /** The context a switch would hand over: `fork` for a new session, else in place. */
+  previewContext: (id: string, mode: 'compact' | 'full' | 'none', fork: boolean) =>
+    request<Omit<ContextSentRecord, 'reason'> & { reason: ContextSentRecord['reason'] | 'none' }>(
+      `/api/sessions/${id}/context-preview?mode=${mode}${fork ? '&fork=1' : ''}`
+    ),
   rollbackSession: (
     id: string,
     opts: {

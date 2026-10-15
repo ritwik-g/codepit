@@ -3,6 +3,7 @@ import type { AcpSession, AutoCompactSetting, CompactionRecord, TurnMessage } fr
 import { api } from '../api';
 import { Icon, Spinner } from '../ui';
 import { MarkdownContent } from './MarkdownContent';
+import { ContextSentChip } from './ContextSent';
 import { cx, formatTime } from './sessionMeta';
 import '../styles/compaction.css';
 
@@ -67,6 +68,7 @@ export const CompactionCard: React.FC<{ turn: TurnMessage }> = ({ turn }) => {
           <time className="ws-compaction-time" dateTime={new Date(turn.timestamp).toISOString()}>
             {formatTime(turn.timestamp)}
           </time>
+          {turn.contextSent && <ContextSentChip context={turn.contextSent} className="ws-compaction-context" />}
           {c.summary && c.status === 'completed' && (
             <button
               type="button"

@@ -265,6 +265,34 @@ export interface TurnMessage {
   compaction?: CompactionRecord;
   /** Claude keywords CodePit added to a user message it sent (ultrathink, ultracode). */
   keywords?: string[];
+  /** The conversation CodePit handed the agent with this turn's prompt, as it was sent. */
+  contextSent?: ContextSentRecord;
+}
+
+/**
+ * Context CodePit put in front of a prompt for an agent session that lacked the conversation:
+ * 'handoff' is a new agent session (switch, fresh session, restart, compaction), 'catch-up' a
+ * continued one told what it missed, 'fork' a new CodePit session handed over from another,
+ * 'compaction' the history a freshly started agent was given to summarise.
+ */
+export interface ContextSentRecord {
+  reason: 'handoff' | 'catch-up' | 'fork' | 'compaction';
+  mode: 'compact' | 'full';
+  /** Exactly what the agent received, the prompt itself included. */
+  text: string;
+  /** Conversation turns listed (the compaction summary, when there is one, stands in for earlier ones). */
+  turnCount: number;
+  includesSummary: boolean;
+  /** Fork: the session and agent it was handed over from. */
+  fromSessionId?: string;
+  fromAgent?: string;
+}
+
+/** A fork's handover, held on the new session until its first prompt goes out. */
+export interface PendingContext {
+  /** Put in front of the first prompt. */
+  text: string;
+  record: Omit<ContextSentRecord, 'text'>;
 }
 
 /**
@@ -443,6 +471,8 @@ export interface AcpSession {
   ultrathinkNext?: boolean;
   contextMode?: ContextTransferMode;
   contextHandoffPending?: boolean;
+  /** A fork's handover from the session it came from, sent with the first prompt. */
+  pendingContext?: PendingContext;
   failoverFromId?: string; // Tracks previous session if failed over from another agent
   activeTerminalId?: string;
   promptSuggestion?: string;

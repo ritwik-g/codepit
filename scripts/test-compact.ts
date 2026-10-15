@@ -244,6 +244,10 @@ try {
     assert.ok(lastThought.includes('Summary of the conversation so far'), lastThought.slice(0, 300));
     assert.equal(count(lastThought, summary.slice(0, 60)), 1);
     assert.ok(!lastThought.includes('Remember the codeword PAPAYA'), 'the compacted prompt is not resent');
+    const sent = sessionManager.getSession(s.id)!.turns.filter((t) => t.role === 'user').at(-1)!.contextSent!;
+    assert.equal(sent.reason, 'handoff', 'the handoff is kept on the turn that carried it');
+    assert.equal(sent.includesSummary, true);
+    assert.ok(sent.text.includes(summary.slice(0, 60)) && sent.text.endsWith('What was the codeword'));
   });
 
   await test('an agent switch hands off the latest summary plus the turns after it', async () => {
@@ -357,7 +361,10 @@ try {
       await sessionManager.compactSession(s.id);
       await waitForIdle(s.id);
       assert.ok(sent[0]?.includes('MANGO'), 'the summary prompt carries the history');
-      const c = sessionManager.getSession(s.id)!.turns.at(-1)!.compaction!;
+      const card = sessionManager.getSession(s.id)!.turns.at(-1)!;
+      assert.equal(card.contextSent?.reason, 'compaction', 'the card keeps what the summary was written from');
+      assert.equal(card.contextSent?.text, sent[0]);
+      const c = card.compaction!;
       assert.equal(c.method, 'handoff');
       assert.equal(c.status, 'completed');
     } finally {
@@ -389,6 +396,79 @@ try {
     assert.equal(c.status, 'cancelled');
     assert.ok(c.endedAt);
   });
+
+  console.log('Context sent');
+
+  const { AcpClientHost } = await import('../server/acp/client-host.js');
+  const recordSent = () => {
+    const sent: Array<{ text: string }> = [];
+    const original = AcpClientHost.prototype.sendPrompt;
+    AcpClientHost.prototype.sendPrompt = function (this: any, text: string, att?: any) {
+      sent.push({ text });
+      return original.call(this, text, att);
+    };
+    return { sent, restore: () => (AcpClientHost.prototype.sendPrompt = original) };
+  };
+  const forks: string[] = [];
+  // The record is kept before the prompt goes out; the fork's reply may then wait for approval, so stop it
+  const firstUserTurn = async (id: string) => {
+    const turn = () => sessionManager.getSession(id)?.turns.find((t) => t.role === 'user');
+    for (let i = 0; i < 200 && !turn()?.contextSent; i++) await new Promise((r) => setTimeout(r, 50));
+    await sessionManager.cancelPrompt(id);
+    await waitForIdle(id);
+    return turn()!;
+  };
+
+  await test('a handoff is kept on its turn exactly as sent; a plain prompt keeps none', async () => {
+    const rec = recordSent();
+    try {
+      await sessionManager.stopSessionAgent(s.id);
+      await sessionManager.startSessionAgent(s.id);
+      await sessionManager.sendPrompt(s.id, 'Restarted, carry on');
+      await waitForIdle(s.id);
+      const turn = sessionManager.getSession(s.id)!.turns.filter((t) => t.role === 'user').at(-1)!;
+      assert.equal(turn.content, 'Restarted, carry on', 'the transcript shows only the message');
+      assert.equal(turn.contextSent?.text, rec.sent.at(-1)!.text);
+      assert.ok(turn.contextSent!.turnCount > 0);
+      await sessionManager.sendPrompt(s.id, 'And one more');
+      await waitForIdle(s.id);
+      assert.equal(sessionManager.getSession(s.id)!.turns.filter((t) => t.role === 'user').at(-1)!.contextSent, undefined);
+    } finally {
+      rec.restore();
+    }
+  });
+
+  await test('a fork hands the conversation over with its continuation prompt, as previewed', async () => {
+    const preview = await sessionManager.previewContext(s.id, { mode: 'compact', fork: true });
+    assert.ok(preview.text.startsWith('[Agent Switch / Failover Handover]') && preview.text.includes('And one more'));
+    const rec = recordSent();
+    try {
+      const f = await sessionManager.switchAgent(s.id, 'mock', { customPrompt: 'Carry on from the fork', contextMode: 'compact' });
+      forks.push(f.id);
+      const turn = await firstUserTurn(f.id);
+      assert.equal(turn.content, 'Carry on from the fork');
+      assert.equal(turn.contextSent?.reason, 'fork');
+      assert.equal(turn.contextSent?.fromSessionId, s.id);
+      assert.equal(turn.contextSent?.text, `${preview.text}\n\n[Active User Request]\nCarry on from the fork`);
+      assert.ok(rec.sent.some((x) => x.text === turn.contextSent!.text), 'what was kept is what the agent got');
+      assert.equal(sessionManager.getSession(f.id)!.pendingContext, undefined);
+    } finally {
+      rec.restore();
+    }
+  });
+
+  await test('a fork without a prompt sends the handover with the first message', async () => {
+    const f = await sessionManager.switchAgent(s.id, 'mock', { skipInitialPrompt: true, contextMode: 'none' });
+    forks.push(f.id);
+    assert.ok(sessionManager.getSession(f.id)!.pendingContext, 'held until the first message');
+    await sessionManager.sendPrompt(f.id, 'Hello fork');
+    const turn = await firstUserTurn(f.id);
+    assert.equal(turn.contextSent?.reason, 'fork');
+    assert.equal(turn.contextSent?.turnCount, 0, "'none' hands over no turns");
+    assert.ok(turn.contextSent!.text.includes('- Workspace:') && !turn.contextSent!.text.includes('Prior Conversation Context'));
+  });
+
+  for (const id of forks) sessionManager.deleteSession(id);
 } finally {
   sessionManager.shutdown();
   fs.rmSync(testAppDir, { recursive: true, force: true });

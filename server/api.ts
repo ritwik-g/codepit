@@ -467,6 +467,21 @@ apiRouter.post('/sessions/:id/switch', async (req: Request, res: Response) => {
   }
 });
 
+// The context a switch would hand over, shown in the switch dialog before it is made
+apiRouter.get('/sessions/:id/context-preview', async (req: Request, res: Response) => {
+  try {
+    const mode = String(req.query.mode || 'compact');
+    if (mode !== 'compact' && mode !== 'full' && mode !== 'none') {
+      res.status(400).json({ error: 'mode must be compact, full or none' });
+      return;
+    }
+    const preview = await sessionManager.previewContext(sid(req), { mode, fork: req.query.fork === '1' });
+    res.json(preview);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Rollback / Undo turns in conversation
 apiRouter.post('/sessions/:id/rollback', async (req: Request, res: Response) => {
   try {
