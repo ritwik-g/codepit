@@ -583,6 +583,15 @@
   max-width: 100%;
 }
 
+/* A message CodePit wrote to ask the agent to stop a subagent, not one the user typed */
+.ws-user-bubble.is-stop-request {
+  border-style: dashed;
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
 .ws-user-attachments {
   display: flex;
   flex-wrap: wrap;

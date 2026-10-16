@@ -228,6 +228,8 @@ export interface TurnMessage {
   keywords?: string[];
   /** The conversation CodePit handed the agent with this turn (see server/types.ts). */
   contextSent?: ContextSentRecord;
+  /** CodePit wrote this message to ask the agent to stop one of its subagents. */
+  stopRequest?: { taskId: string; title: string };
 }
 
 export interface ContextSentRecord {
@@ -758,6 +760,10 @@ export interface AgentTask {
   toolCallId?: string;
   /** The AIR async task id, for background work and workflows. */
   asyncTaskId?: string;
+  /** The agent said it can stop this async task on request. */
+  canStop?: boolean;
+  /** When CodePit last sent the agent a message asking it to stop this subagent. */
+  stopRequestedAt?: number;
   /** The task it was launched from, when a subagent launches another. */
   parentTaskId?: string;
   /** How it ended, or why it was cut off. */

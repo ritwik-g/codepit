@@ -17,7 +17,7 @@ import { getClaudeRateLimits, onClaudeRateLimitsChanged, refreshClaudeRateLimits
 import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, rememberAgentOptions, resolveModelValue } from './agent-options.js';
 import { logQueueEvent } from '../queue-log.js';
 import { decideLimitResume, limitNoticeInText, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit, type UsageLimitHit } from '../limit-resume.js';
-import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
+import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, subagentStopRequest, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
 import type { AcpSession, ContextSentRecord, PendingContext, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
@@ -1253,7 +1253,7 @@ export class SessionManager extends EventEmitter {
     return host;
   }
 
-  async sendPrompt(sessionId: string, promptText: string, attachments?: FileAttachment[]): Promise<void> {
+  async sendPrompt(sessionId: string, promptText: string, attachments?: FileAttachment[], opts: { stopRequest?: TurnMessage['stopRequest'] } = {}): Promise<void> {
     const session = store.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
     // One turn at a time: the web client cancels the running turn before sending ("Send & Interrupt")
@@ -1278,13 +1278,14 @@ export class SessionManager extends EventEmitter {
       agentId: session.agentId,
       agentName: session.agentName,
       model: session.model,
+      ...(opts.stopRequest ? { stopRequest: opts.stopRequest } : {}),
     });
 
     session.state = 'working';
     session.agentStopped = false;
     session.promptSuggestion = undefined;
     // Claude's keywords go to the agent, not into the transcript; a slash command takes none
-    const keywords = isSlashCommand(promptText) ? [] : takeKeywords(session);
+    const keywords = isSlashCommand(promptText) || opts.stopRequest ? [] : takeKeywords(session);
     const userTurn = session.turns[session.turns.length - 1];
     if (keywords.length > 0) userTurn.keywords = keywords;
     // /clear empties Claude's own context: continuing that session later would not bring it back
@@ -1852,6 +1853,111 @@ export class SessionManager extends EventEmitter {
       this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted', session });
       this.emit('sessionsUpdated', this.listSessions());
     }
+  }
+
+  /**
+   * Stop one background shell, monitor or workflow the agent is running, leaving the turn
+   * and the rest of its work alone. Only async tasks the agent said it can stop: neither
+   * Claude's nor Codex's adapter offers a way to stop a single subagent.
+   * Returns false when the agent no longer had it running.
+   */
+  async stopAgentTaskById(sessionId: string, taskId: string): Promise<boolean> {
+    const session = store.get(sessionId);
+    if (!session) throw new Error(`Session ${sessionId} not found`);
+    const task = session.agentTasks?.find((t) => t.id === taskId);
+    if (!task) throw new Error('Task not found');
+    if (task.status !== 'running') return false;
+    if (!task.asyncTaskId || !task.canStop) throw new Error('The agent cannot stop this task on its own');
+    const host = this.activeHosts.get(sessionId);
+    if (!host) throw new Error('The agent is not running');
+    console.log(`[session-mgr] Stopping task ${task.asyncTaskId} (${task.title}) on ${sessionId}`);
+    const stopped = await host.stopAsyncTask(task.asyncTaskId);
+    if (!stopped) return false;
+    // The agent reports the stop as an async_task update too; record it now in case that came first or never comes
+    const s = store.get(sessionId);
+    const ended = s && stopAgentTask(s, taskId, 'Stopped from CodePit');
+    if (!s || !ended) return true;
+    const owner = ended.toolCallId ? findToolCall(s, ended.toolCallId) : null;
+    if (owner && owner.call.background && (!owner.call.backgroundState || owner.call.backgroundState === 'running')) {
+      owner.call.backgroundState = 'stopped';
+      owner.call.backgroundSummary = ended.summary;
+      owner.call.backgroundEndedAt = ended.endedAt;
+    }
+    store.save(s, { touch: false });
+    this.emit('sessionStream', { sessionId, type: 'backgroundUpdate', toolCall: owner?.call, turn: owner ? withoutToolCalls(owner.turn) : undefined, agentTasks: [ended] });
+    this.recheckAutoCompact(sessionId);
+    return true;
+  }
+
+  /**
+   * Ask the agent to stop one of its subagents, the fallback for what no adapter can do
+   * directly: a message naming the subagent and the agent's own tool for it, added to the
+   * running turn when there is one, or sent as a new prompt. The message is marked as a stop
+   * request, so it reads differently from one the user typed, and the task as stop-requested.
+   */
+  async requestSubagentStop(sessionId: string, taskId: string): Promise<void> {
+    const session = store.get(sessionId);
+    if (!session) throw new Error(`Session ${sessionId} not found`);
+    const task = session.agentTasks?.find((t) => t.id === taskId);
+    if (!task) throw new Error('Task not found');
+    if (task.kind !== 'subagent' || task.status !== 'running') throw new Error('Only a running subagent can be asked to stop');
+    const text = subagentStopRequest(session.agentId, task);
+    if (!text) throw new Error(`${session.agentName} cannot be asked to stop this subagent`);
+    const stopRequest = { taskId, title: task.title };
+    const markRequested = () => {
+      const s = store.get(sessionId);
+      const t = s?.agentTasks?.find((x) => x.id === taskId);
+      if (!s || !t) return;
+      t.stopRequestedAt = Date.now();
+      store.save(s, { touch: false });
+      this.emit('sessionStream', { sessionId, type: 'agentTask', agentTasks: [t] });
+    };
+    console.log(`[session-mgr] Asking the agent on ${sessionId} to stop subagent ${task.audit?.subagentId ?? taskId} (${task.title})`);
+
+    if (this.canSteer(sessionId)) {
+      const host = this.activeHosts.get(sessionId)!;
+      // Recorded before it is sent, so the agent's answer to it lands below it
+      const turn: TurnMessage = {
+        id: `usr-${Date.now()}`,
+        role: 'user',
+        content: text,
+        timestamp: Date.now(),
+        agentId: session.agentId,
+        agentName: session.agentName,
+        model: session.model,
+        stopRequest,
+      };
+      session.turns.push(turn);
+      store.save(session);
+      this.emit('sessionStream', { sessionId, type: 'turnAdded', turn });
+      let outcome: Awaited<ReturnType<AcpClientHost['steer']>> | undefined;
+      try {
+        outcome = await host.steer(text);
+      } catch (err) {
+        this.dropTurn(sessionId, turn.id);
+        throw err;
+      }
+      if (outcome !== 'promptRequired') {
+        markRequested();
+        return;
+      }
+      // The turn ended as it was sent: send it as a prompt of its own below
+      this.dropTurn(sessionId, turn.id);
+    }
+    if (this.isTurnInFlight(sessionId)) throw new Error(`${session.agentName} cannot take a message during this turn; stop the turn instead`);
+    // Not awaited: the prompt runs as a turn of its own, and its user turn is recorded before the first await
+    this.sendPrompt(sessionId, text, undefined, { stopRequest }).catch((err) => {
+      console.error(`[session-mgr] Error sending the stop request on ${sessionId}:`, err);
+    });
+    markRequested();
+  }
+
+  private dropTurn(sessionId: string, turnId: string): void {
+    const s = store.get(sessionId);
+    if (!s) return;
+    s.turns = s.turns.filter((t) => t.id !== turnId);
+    store.save(s);
+    this.emit('sessionStream', { sessionId, type: 'turnRemoved', session: { turns: s.turns } });
   }
 
   /**

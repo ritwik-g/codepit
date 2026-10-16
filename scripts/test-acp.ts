@@ -356,13 +356,26 @@ async function runTests() {
     if (bgTurns.length !== 1 || !bgTurns[0].toolCalls?.length || !bgTurns[0].content?.includes('Started it in the background')) {
       throw new Error(`Tool call and reply split across turns: ${JSON.stringify(bgTurns.map((t) => ({ calls: t.toolCalls?.length, content: t.content })))}`);
     }
+    // One task stopped on its own: the agent is asked, and the task and its call end as stopped
+    await sessionManager.sendPrompt(bgSession.id, 'One more background job to stop');
+    await waitForIdle(bgSession.id);
+    const toStop = sessionManager.getSession(bgSession.id)!.agentTasks!.find((t) => t.status === 'running');
+    if (!toStop?.canStop || !toStop.asyncTaskId) throw new Error(`A spawned async task should say it can be stopped: ${JSON.stringify(toStop)}`);
+    if (!(await sessionManager.stopAgentTaskById(bgSession.id, toStop.id))) throw new Error('Stopping a running background task should succeed');
+    const afterStop = sessionManager.getSession(bgSession.id)!;
+    if (afterStop.agentTasks!.find((t) => t.id === toStop.id)?.status !== 'stopped' || bgCall()!.backgroundState !== 'stopped') {
+      throw new Error(`A stopped task and its call should be recorded as stopped: ${JSON.stringify(bgCall())}`);
+    }
+    if (await sessionManager.stopAgentTaskById(bgSession.id, toStop.id)) throw new Error('Stopping a task that already ended should report false');
+    await new Promise((r) => setTimeout(r, 2200)); // past when it would have finished
+    if (bgCall()!.backgroundState !== 'stopped') throw new Error('A stopped task must not finish later');
     await sessionManager.sendPrompt(bgSession.id, 'Another background job please');
     await waitForIdle(bgSession.id);
     await sessionManager.stopSessionAgent(bgSession.id);
     if (bgCall()!.backgroundState !== 'stopped' || !/stopped/i.test(bgCall()!.backgroundSummary || '')) {
       throw new Error(`Stopping the agent should stop its background work: ${JSON.stringify(bgCall())}`);
     }
-    console.log('   ✅ Background work completes after the turn, shows its output, and stops with the agent\n');
+    console.log('   ✅ Background work completes after the turn, shows its output, can be stopped on its own, and stops with the agent\n');
 
     // 9b2. Subagents in sessions of their own (Codex): shown as subagent calls, their work filed under them
     console.log('9️⃣b2 Testing subagents that report through their own session...');

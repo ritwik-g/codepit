@@ -331,6 +331,26 @@ apiRouter.post('/sessions/:id/cancel', async (req: Request, res: Response) => {
   }
 });
 
+// 6a. Stop one background command, monitor or workflow the agent is running
+apiRouter.post('/sessions/:id/tasks/:taskId/stop', async (req: Request, res: Response) => {
+  try {
+    const stopped = await sessionManager.stopAgentTaskById(sid(req), String(req.params.taskId));
+    res.json({ stopped });
+  } catch (err: any) {
+    res.status(/not found$/.test(err.message) ? 404 : 409).json({ error: err.message });
+  }
+});
+
+// 6a2. Ask the agent to stop one subagent (no agent can stop one directly)
+apiRouter.post('/sessions/:id/tasks/:taskId/request-stop', async (req: Request, res: Response) => {
+  try {
+    await sessionManager.requestSubagentStop(sid(req), String(req.params.taskId));
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(/not found$/.test(err.message) ? 404 : 409).json({ error: err.message });
+  }
+});
+
 // 6b. Stop / Park underlying agent subprocess & terminal
 apiRouter.post('/sessions/:id/stop', async (req: Request, res: Response) => {
   try {

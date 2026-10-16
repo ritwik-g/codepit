@@ -130,6 +130,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ source }),
     }),
+  /** Stop one background command, monitor or workflow; `stopped` is false when it had already ended. */
+  stopAgentTask: (id: string, taskId: string) =>
+    request<{ stopped: boolean }>(`/api/sessions/${id}/tasks/${encodeURIComponent(taskId)}/stop`, {
+      method: 'POST',
+    }),
+  /** Ask the agent, by a message marked as a stop request, to stop one of its subagents. */
+  requestSubagentStop: (id: string, taskId: string) =>
+    request<{ ok: boolean }>(`/api/sessions/${id}/tasks/${encodeURIComponent(taskId)}/request-stop`, {
+      method: 'POST',
+    }),
   stopSessionAgent: (id: string) =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/stop`, {
       method: 'POST',

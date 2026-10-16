@@ -127,8 +127,32 @@ export function trackAsyncTask(s: AcpSession, u: AsyncTaskUpdate, callId: string
   if (u.kind === 'spawned' && u.name && (task.kind === 'workflow' || !task.title || PLACEHOLDER_TITLES.has(task.title))) task.title = u.name;
   if (u.description && !task.prompt && task.kind === 'workflow') task.prompt = u.description;
   if (u.usage) task.usage = { ...task.usage, ...u.usage };
+  if (u.canStop !== undefined) task.canStop = u.canStop;
   if (u.state && u.state !== 'running') finish(task, u.state, u.summary);
   return task;
+}
+
+/**
+ * The message that asks the agent to stop one subagent, for agents with a tool that does it
+ * (Claude's TaskStop, Codex's close_agent); undefined for any other agent. Neither adapter can
+ * stop a single subagent itself, so this is the fallback. A subagent run by another agent
+ * than the one now in the session is out of its reach.
+ */
+export function subagentStopRequest(agentId: string, task: AgentTask): string | undefined {
+  if (task.kind !== 'subagent' || task.status !== 'running') return undefined;
+  if (task.audit?.agentId && task.audit.agentId !== agentId) return undefined;
+  const id = task.audit?.subagentId;
+  const name = JSON.stringify(task.title);
+  const how =
+    agentId === 'claude' ? (id ? `call TaskStop with task_id "${id}"` : 'find its task id and call TaskStop with it')
+    : agentId === 'codex' ? (id ? `call close_agent with id "${id}"` : 'find its agent id and call close_agent with it')
+    : undefined;
+  if (!how) return undefined;
+  return [
+    `[Stop request from CodePit] Stop the running subagent ${name} now: ${how}.`,
+    'Stop only that subagent; leave your other work running, and do not redo its task yourself.',
+    'Then reply in one line saying whether it stopped.',
+  ].join(' ');
 }
 
 /** Mark one running task as stopped; null when it was not running. */

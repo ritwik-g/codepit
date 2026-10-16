@@ -20,6 +20,8 @@ class MockAcpAgent {
   /** The client draws forms (ACP elicitation, form mode), as Claude's adapter checks before AskUserQuestion. */
   private forms = false;
   private clientCapabilities: unknown = null;
+  /** Background commands still running, by async task id: how to stop each early. */
+  private asyncTasks = new Map<string, () => Promise<void>>();
 
   async initialize(params: any) {
     const air = params?.clientCapabilities?._meta?.jetbrains?.air;
@@ -33,6 +35,15 @@ class MockAcpAgent {
         mcpCapabilities: { http: true, sse: true },
       },
     };
+  }
+
+  /** AIR `_session/async_task/stop`, as Claude's and Codex's adapters take it. */
+  async stopAsyncTask(params: { sessionId: string; asyncTaskId: string }) {
+    const stop = this.asyncTasks.get(params?.asyncTaskId);
+    if (!stop) return { stopped: false };
+    this.asyncTasks.delete(params.asyncTaskId);
+    await stop();
+    return { stopped: true };
   }
 
   async newSession(params: { cwd?: string; mcpServers?: SessionData['mcpServers'] }) {
@@ -87,10 +98,15 @@ class MockAcpAgent {
         _meta: { jetbrains: { air: { version: 1, asyncTasks: { backgrounded: true } } } },
       });
       await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Started it in the background; it finishes in about two seconds.' } });
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this.asyncTasks.delete(taskId);
         fs.writeFileSync(outputFile, 'background work finished\n');
         void send({ sessionUpdate: 'async_task_state_update', asyncTaskId: taskId, state: 'completed', toolCallId: callId, outputFilePath: outputFile }).catch(() => {});
       }, 2000);
+      this.asyncTasks.set(taskId, async () => {
+        clearTimeout(timer);
+        await send({ sessionUpdate: 'async_task_state_update', asyncTaskId: taskId, state: 'stopped', toolCallId: callId });
+      });
       return { stopReason: 'end_turn' as const };
     }
 
@@ -506,6 +522,7 @@ async function main() {
     .onRequest('initialize', (ctx: any) => agent.initialize(ctx.params))
     .onRequest('session/new', (ctx: any) => agent.newSession(ctx.params))
     .onRequest('session/prompt', (ctx: any) => agent.prompt(ctx.params, ctx.client))
+    .onRequest('_session/async_task/stop', { parse: (v: unknown) => v as { sessionId: string; asyncTaskId: string } }, (ctx: any) => agent.stopAsyncTask(ctx.params))
     .onNotification('session/cancel', (ctx: any) => agent.cancel(ctx.params))
     .connect(stream);
 }

@@ -17,6 +17,7 @@ import {
   stopAsyncSubagent,
   SUBAGENT_STOPPED,
   stopAgentTask,
+  subagentStopRequest,
   syncAgentTasks,
   trackAsyncTask,
   trackTaskText,
@@ -124,9 +125,10 @@ test('a background shell is a task until its async task reports an end', () => {
   assert.equal(s.agentTasks![0].kind, 'background');
   assert.equal(s.agentTasks![0].title, 'npm run dev');
   assert.equal(s.agentTasks![0].status, 'running');
-  trackAsyncTask(s, { kind: 'spawned', asyncTaskId: 'bt1', toolCallId: 'c1', taskType: 'shell', name: 'Dev server' }, 'c1');
+  trackAsyncTask(s, { kind: 'spawned', asyncTaskId: 'bt1', toolCallId: 'c1', taskType: 'shell', name: 'Dev server', canStop: true }, 'c1');
   assert.equal(s.agentTasks!.length, 1);
   assert.equal(s.agentTasks![0].asyncTaskId, 'bt1');
+  assert.equal(s.agentTasks![0].canStop, true);
   assert.equal(s.agentTasks![0].agentType, 'shell');
   trackAsyncTask(s, { kind: 'state', asyncTaskId: 'bt1', state: 'failed', summary: 'exit 1' }, 'c1');
   assert.equal(s.agentTasks![0].status, 'failed');
@@ -237,6 +239,26 @@ test('stopping the agent stops running tasks and leaves finished ones', () => {
   assert.deepEqual(s.agentTasks!.map((t) => t.status), ['stopped', 'completed']);
   assert.equal(s.agentTasks![0].summary, 'Stopped when the agent was stopped');
   assert.equal(endAgentTasks(s, 'again'), false);
+});
+
+test("a subagent stop request names the agent's own tool and the subagent's id", () => {
+  const s = session([agentTurn()]);
+  addCall(s, { id: 'a1', title: 'Agent', status: 'running', startedAt: 1, isSubagent: true, input: { description: 'R2 lens 13 tests', prompt: 'x' }, agentRef: { subagentId: 'ab12' } });
+  const task = s.agentTasks![0];
+  task.audit = { ...task.audit, agentId: 'claude' };
+  const claude = subagentStopRequest('claude', task)!;
+  assert.match(claude, /^\[Stop request from CodePit\]/);
+  assert.match(claude, /TaskStop with task_id "ab12"/);
+  assert.match(claude, /"R2 lens 13 tests"/);
+  // Run by Claude, so a Codex agent switched in since cannot reach it
+  assert.equal(subagentStopRequest('codex', task), undefined);
+  task.audit.agentId = 'codex';
+  assert.match(subagentStopRequest('codex', task)!, /close_agent with id "ab12"/);
+  // No tool for it elsewhere, and nothing to ask once it has ended
+  task.audit.agentId = undefined;
+  assert.equal(subagentStopRequest('antigravity', task), undefined);
+  task.status = 'completed';
+  assert.equal(subagentStopRequest('claude', task), undefined);
 });
 
 test('one task can be stopped on its own, only while it runs', () => {
@@ -373,6 +395,8 @@ test('async_task updates carry type, description and usage', () => {
   const spawned = parseAsyncTaskUpdate({ sessionUpdate: 'async_task_spawned', asyncTaskId: 't2', taskType: 'workflow', name: 'wf', usage: { totalTokens: 1 } })!;
   assert.equal(spawned.taskType, 'workflow');
   assert.equal(spawned.usage, undefined);
+  assert.equal(spawned.canStop, undefined);
+  assert.equal(parseAsyncTaskUpdate({ sessionUpdate: 'async_task_spawned', asyncTaskId: 't3', canStop: true })!.canStop, true);
 });
 
 test('a Workflow call is a workflow task, named from its script, even with no async_task update', () => {

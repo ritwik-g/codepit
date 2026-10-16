@@ -267,6 +267,8 @@ export interface TurnMessage {
   keywords?: string[];
   /** The conversation CodePit handed the agent with this turn's prompt, as it was sent. */
   contextSent?: ContextSentRecord;
+  /** CodePit wrote this message to ask the agent to stop one of its subagents (no agent can stop one directly). */
+  stopRequest?: { taskId: string; title: string };
 }
 
 /**
@@ -710,6 +712,8 @@ export interface AsyncTaskUpdate {
   taskType?: string;
   description?: string;
   usage?: { totalTokens: number; toolUses: number; durationMs: number };
+  /** The agent takes `_session/async_task/stop` for it (spawned only). */
+  canStop?: boolean;
 }
 
 // ------------------------------------------------------------ Agent tasks
@@ -761,6 +765,10 @@ export interface AgentTask {
   toolCallId?: string;
   /** The AIR async task id, for background work and workflows. */
   asyncTaskId?: string;
+  /** The agent said it can stop this async task on request. */
+  canStop?: boolean;
+  /** When CodePit last sent the agent a message asking it to stop this subagent. */
+  stopRequestedAt?: number;
   /** The task it was launched from, when a subagent launches another. */
   parentTaskId?: string;
   /** How it ended, or why it was cut off. */

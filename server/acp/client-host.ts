@@ -965,6 +965,21 @@ export class AcpClientHost extends EventEmitter {
     return res?.outcome === 'promptRequired' || res?.outcome === 'startedNewTurn' ? res.outcome : 'injected';
   }
 
+  /**
+   * Ask the agent to stop one of its async tasks (a background shell, monitor or workflow),
+   * the AIR `_session/async_task/stop` request Claude's and Codex's adapters take. False when
+   * the agent no longer has it running; its final state still arrives as an async_task update.
+   */
+  async stopAsyncTask(asyncTaskId: string): Promise<boolean> {
+    if (this.closed) throw this.closed;
+    if (!this.connection || !this.sessionId) throw new Error('ACP Client not connected or initialized');
+    this.touch();
+    const res = await this.untilClosed(
+      this.connection.agent.request<{ stopped?: boolean }>('_session/async_task/stop', { sessionId: this.sessionId, asyncTaskId })
+    );
+    return res?.stopped === true;
+  }
+
   private async runPrompt(
     connection: acp.ClientConnection,
     sessionId: string,
@@ -1219,6 +1234,7 @@ export function parseAsyncTaskUpdate(update: any): AsyncTaskUpdate | null {
     outputFilePath: typeof update.outputFilePath === 'string' ? update.outputFilePath : undefined,
     taskType: typeof update.taskType === 'string' ? update.taskType : undefined,
     description: typeof update.description === 'string' ? update.description : undefined,
+    canStop: typeof update.canStop === 'boolean' ? update.canStop : undefined,
     usage:
       typeof update.usage?.totalTokens === 'number' && typeof update.usage?.toolUses === 'number' && typeof update.usage?.durationMs === 'number'
         ? { totalTokens: update.usage.totalTokens, toolUses: update.usage.toolUses, durationMs: update.usage.durationMs }

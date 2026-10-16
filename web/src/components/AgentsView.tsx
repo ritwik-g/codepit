@@ -10,6 +10,7 @@ import { VendorIcon } from './VendorLogos';
 import { useOpenAgentSession } from './agentTaskNav';
 import { STATUS, useNow } from './taskStatus';
 import { SubagentBoard, WorkflowRunPanel } from './WorkflowView';
+import { api } from '../api';
 import '../styles/agents.css';
 
 /**
@@ -60,6 +61,77 @@ function segmentsOf(task: AgentTask, calls: Map<string, ToolCallRecord>): TurnSe
   }
   return segs;
 }
+
+/** A subagent the agent was asked to stop by message and that is still running. */
+const stopAsked = (task: AgentTask) => task.status === 'running' && task.stopRequestedAt !== undefined;
+const STOP_ASKED_HINT = 'Still running: CodePit asked the agent by message to stop it, and the agent has not done so yet';
+
+// Agents with a tool that stops one of their subagents, asked to by message (TaskStop, close_agent)
+const ASKABLE_AGENTS = new Set(['claude', 'codex']);
+
+/**
+ * How a running task can be stopped from here: 'direct' when the agent stops it on request
+ * (background commands, monitors, workflows it said it can stop), 'ask' when the only way
+ * is a message asking the agent to (subagents: no adapter can stop one directly).
+ */
+function stopMode(task: AgentTask, agentId: string): 'direct' | 'ask' | null {
+  if (task.status !== 'running') return null;
+  if (task.asyncTaskId && task.canStop === true) return 'direct';
+  if (task.kind !== 'subagent' || !ASKABLE_AGENTS.has(agentId)) return null;
+  // One run by an agent since switched away from is out of the current agent's reach
+  return !task.audit?.agentId || task.audit.agentId === agentId ? 'ask' : null;
+}
+
+/**
+ * Stops one task without touching the turn or other work. A subagent cannot be stopped
+ * directly, so its button is a different one: it sends the agent a message asking it to.
+ */
+const StopTaskButton: React.FC<{ sessionId: string; agentId: string; task: AgentTask }> = ({ sessionId, agentId, task }) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mode = stopMode(task, agentId);
+  if (!mode) return null;
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (mode === 'ask') await api.requestSubagentStop(sessionId, task.id);
+      else if (!(await api.stopAgentTask(sessionId, task.id)).stopped) setError('It had already ended');
+    } catch (err: any) {
+      setError(err?.message || 'Could not stop it');
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (mode === 'ask') {
+    const requested = task.stopRequestedAt !== undefined;
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon="message"
+        loading={busy}
+        onClick={run}
+        className="agents-ask-stop"
+        title={
+          error ??
+          (requested
+            ? 'A stop request was sent; the agent stops it when it acts on the message. Click to send another.'
+            : 'No agent can stop a subagent directly. This sends the agent a message, marked as a stop request, asking it to stop this one.')
+        }
+        aria-label={`${requested ? 'Ask again to stop' : 'Ask the agent to stop'}: ${task.title}`}
+      >
+        {error ? 'Retry ask' : requested ? 'Ask again' : 'Ask to stop'}
+      </Button>
+    );
+  }
+  const label = task.kind === 'workflow' ? 'Stop workflow' : task.agentType === 'monitor' ? 'Stop monitor' : 'Stop command';
+  return (
+    <Button variant="danger-ghost" size="sm" icon="stop" loading={busy} onClick={run} title={error ?? `${label}: the agent stops it now; the turn and other work keep going`} aria-label={`${label}: ${task.title}`}>
+      {error ? 'Retry stop' : 'Stop'}
+    </Button>
+  );
+};
 
 function taskDuration(task: AgentTask, now: number): string | null {
   if (task.usage?.durationMs != null && task.status !== 'running') return formatDuration(task.usage.durationMs);
@@ -186,6 +258,8 @@ const TaskList: React.FC<{ session: AcpSession; tasks: AgentTask[]; onOpen: (ids
           {items.map((task) => (
             <TaskRow
               key={task.id}
+              sessionId={session.id}
+              agentId={session.agentId}
               task={task}
               toolCalls={callsOf(task, calls).length}
               parentTitle={tasks.find((t) => t.id === task.parentTaskId)?.title}
@@ -252,6 +326,8 @@ const TaskList: React.FC<{ session: AcpSession; tasks: AgentTask[]; onOpen: (ids
 };
 
 const TaskRow: React.FC<{
+  sessionId: string;
+  agentId: string;
   task: AgentTask;
   toolCalls: number;
   /** The task this one was launched from, for a subagent started by another. */
@@ -261,7 +337,7 @@ const TaskRow: React.FC<{
   selected: boolean;
   onToggle: () => void;
   onOpen: () => void;
-}> = ({ task, toolCalls, parentTitle, now, selectable, selected, onToggle, onOpen }) => {
+}> = ({ sessionId, agentId, task, toolCalls, parentTitle, now, selectable, selected, onToggle, onOpen }) => {
   const kind = kindView(task);
   const status = STATUS[task.status];
   const duration = taskDuration(task, now);
@@ -303,12 +379,17 @@ const TaskRow: React.FC<{
             {meta.join(' · ')}
           </span>
         </span>
-        <Badge tone={status.tone} title={task.summary}>
+        <Badge tone={stopAsked(task) ? 'warn' : status.tone} title={stopAsked(task) ? STOP_ASKED_HINT : task.summary}>
           {task.status === 'running' && <Spinner size={9} />}
-          {status.label}
+          {stopAsked(task) ? 'Stop requested' : status.label}
         </Badge>
         <Icon name="chevronRight" size={14} className="agents-row-chevron" />
       </button>
+      {stopMode(task, agentId) && (
+        <span className="agents-row-stop">
+          <StopTaskButton sessionId={sessionId} agentId={agentId} task={task} />
+        </span>
+      )}
     </li>
   );
 };
@@ -357,13 +438,13 @@ const FocusedView: React.FC<{
       {single ? (
         <SingleTask session={session} task={single} calls={calls} now={now} />
       ) : (
-        <MergedTasks tasks={tasks} calls={calls} now={now} onOpen={onOpen} />
+        <MergedTasks sessionId={session.id} agentId={session.agentId} tasks={tasks} calls={calls} now={now} onOpen={onOpen} />
       )}
     </>
   );
 };
 
-const TaskHeader: React.FC<{ task: AgentTask; calls: Map<string, ToolCallRecord>; now: number }> = ({ task, calls, now }) => {
+const TaskHeader: React.FC<{ sessionId: string; agentId: string; task: AgentTask; calls: Map<string, ToolCallRecord>; now: number }> = ({ sessionId, agentId, task, calls, now }) => {
   const kind = kindView(task);
   const status = STATUS[task.status];
   const duration = taskDuration(task, now);
@@ -395,10 +476,13 @@ const TaskHeader: React.FC<{ task: AgentTask; calls: Map<string, ToolCallRecord>
           ))}
         </dl>
       </div>
-      <Badge tone={status.tone}>
-        {task.status === 'running' && <Spinner size={9} />}
-        {status.label}
-      </Badge>
+      <div className="agents-focus-actions">
+        <Badge tone={stopAsked(task) ? 'warn' : status.tone} title={stopAsked(task) ? STOP_ASKED_HINT : undefined}>
+          {task.status === 'running' && <Spinner size={9} />}
+          {stopAsked(task) ? 'Stop requested' : status.label}
+        </Badge>
+        <StopTaskButton sessionId={sessionId} agentId={agentId} task={task} />
+      </div>
     </header>
   );
 };
@@ -419,7 +503,7 @@ const SingleTask: React.FC<{ session: AcpSession; task: AgentTask; calls: Map<st
 
   return (
     <>
-      <TaskHeader task={task} calls={calls} now={now} />
+      <TaskHeader sessionId={session.id} agentId={session.agentId} task={task} calls={calls} now={now} />
       {task.prompt && (
         <div className={cx('agents-prompt', task.kind === 'background' && 'is-command')}>
           <IoPanel label={PROMPT_LABEL[task.kind]} copy={task.prompt}>
@@ -578,11 +662,13 @@ const TaskDetails: React.FC<{ task: AgentTask }> = ({ task }) => {
  * timestamp of their own, so each takes the time of the call before it.
  */
 const MergedTasks: React.FC<{
+  sessionId: string;
+  agentId: string;
   tasks: AgentTask[];
   calls: Map<string, ToolCallRecord>;
   now: number;
   onOpen: (ids: string[]) => void;
-}> = ({ tasks, calls, now, onOpen }) => {
+}> = ({ sessionId, agentId, tasks, calls, now, onOpen }) => {
   const entries: Array<{ task: AgentTask; seg: TurnSegment; at: number; order: number }> = [];
   for (const task of tasks) {
     let at = task.startedAt;
@@ -611,6 +697,8 @@ const MergedTasks: React.FC<{
         {tasks.map((task) => (
           <TaskRow
             key={task.id}
+            sessionId={sessionId}
+            agentId={agentId}
             task={task}
             toolCalls={callsOf(task, calls).length}
             now={now}

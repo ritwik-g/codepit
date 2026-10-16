@@ -163,6 +163,11 @@ const UserTurn: React.FC<{
           {k === 'ultracode' ? 'Ultracode' : 'Ultrathink'}
         </Badge>
       ))}
+      {turn.stopRequest && (
+        <Badge tone="warn" icon="stop" title={`CodePit sent this when you chose "Ask to stop" on the subagent "${turn.stopRequest.title}". No agent can stop a subagent directly, so it asks the agent to.`}>
+          Stop request · {turn.stopRequest.title.length > 40 ? `${turn.stopRequest.title.slice(0, 39)}…` : turn.stopRequest.title}
+        </Badge>
+      )}
       {turn.contextSent && <ContextSentChip context={turn.contextSent} />}
       <time className="ws-time" dateTime={new Date(turn.timestamp).toISOString()}>
         {formatTime(turn.timestamp)}
@@ -172,7 +177,7 @@ const UserTurn: React.FC<{
       <TurnAttachments attachments={turn.attachments} onPreviewImage={onPreviewImage} />
     )}
     {turn.content && (
-      <div className="ws-user-bubble">
+      <div className={cx('ws-user-bubble', turn.stopRequest && 'is-stop-request')}>
         <MarkdownContent content={turn.content} />
       </div>
     )}
