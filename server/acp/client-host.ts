@@ -162,6 +162,8 @@ export class AcpClientHost extends EventEmitter {
   /** Approval mode and fast mode chosen in the app, applied at start and when changed. */
   public mode?: string;
   public fastMode?: boolean;
+  /** Claude in Chrome: passed to Claude Code as --chrome when the session is created or resumed. */
+  public chrome?: boolean;
   /** The agent's latest effort and model choices; null until it advertises any. */
   public options: AgentOptions | null = null;
   /** Set when the agent refused the model at start: it runs options.currentModel instead. */
@@ -724,6 +726,7 @@ export class AcpClientHost extends EventEmitter {
               cwd: this.cwd,
               // Both adapters drop MCP servers from a resumed session unless they are sent again
               mcpServers: mcp.servers,
+              ...this.sessionMeta(),
             }),
             RESUME_TIMEOUT_MS,
             'The agent did not resume the session in time'
@@ -741,6 +744,7 @@ export class AcpClientHost extends EventEmitter {
       const sessionRes = await this.untilClosed(connection.agent.request(acp.methods.agent.session.new, {
         cwd: this.cwd,
         mcpServers: mcp.servers,
+        ...this.sessionMeta(),
       }));
       this.sessionId = sessionRes.sessionId;
       configOptions = sessionRes.configOptions;
@@ -758,6 +762,17 @@ export class AcpClientHost extends EventEmitter {
       this.holdOptions = false;
     }
     if (this.options) this.emit('agentOptions', this.options);
+  }
+
+  /**
+   * Launch options for the agent's process, sent with session/new and session/resume. Claude
+   * Code loads Claude in Chrome only when started with --chrome (its interactive default does
+   * not apply to the SDK mode the adapter runs it in); the adapter passes extraArgs through
+   * to the CLI, null being a flag without a value.
+   */
+  private sessionMeta(): { _meta?: Record<string, unknown> } {
+    if (this.agent.id !== 'claude' || !this.chrome) return {};
+    return { _meta: { claudeCode: { options: { extraArgs: { chrome: null } } } } };
   }
 
   private async applyStartOptions(): Promise<void> {

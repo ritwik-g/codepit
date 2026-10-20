@@ -830,6 +830,7 @@ export class SessionManager extends EventEmitter {
     );
     host.mode = session.mode;
     host.fastMode = session.fastMode;
+    host.chrome = session.chrome;
 
     let activeAgentTurn: TurnMessage | null = null;
 
@@ -2551,6 +2552,57 @@ export class SessionManager extends EventEmitter {
     else if (host) host.fastMode = enabled;
     session.fastMode = enabled;
     return this.saveSettingChange(session, 'sessionFastModeUpdated', { fastMode: enabled });
+  }
+
+  /**
+   * Turn Claude in Chrome on or off. Claude Code reads it only at launch, so a running agent is
+   * restarted and continues the same Claude session: the conversation carries over, while work
+   * it runs in the background would not, so that has to finish (or be stopped) first.
+   */
+  async setSessionChrome(sessionId: string, enabled: boolean): Promise<AcpSession> {
+    const session = store.get(sessionId);
+    if (!session) throw new Error(`Session ${sessionId} not found`);
+    if (session.agentId !== 'claude') throw new InvalidOptionError('Claude in Chrome is a Claude Code feature');
+    if (Boolean(session.chrome) === enabled) return session;
+    if (this.isTurnInFlight(sessionId) || this.startingHosts.has(sessionId) || this.compactionRuns.has(sessionId)) {
+      throw new TurnInFlightError('Wait for the current turn to finish before switching Claude in Chrome');
+    }
+    const running = this.activeHosts.has(sessionId);
+    if (running && runningBackgroundWork(session) > 0) {
+      throw new TurnInFlightError('Switching Claude in Chrome restarts Claude, which would stop its background work: let it finish or stop it first');
+    }
+    session.chrome = enabled;
+    // Not running, or nothing to continue (a restart would lose the context): applied at the next start
+    if (!running || !resumableSessionId(session)) return this.saveSettingChange(session, 'sessionChromeUpdated', { chrome: enabled });
+
+    store.save(session);
+    const label = enabled ? 'Restarted with Claude in Chrome' : 'Restarted without Claude in Chrome';
+    this.dropHost(sessionId, label);
+    ptyManager.release(`session-term-${sessionId}`);
+    let failure: string | undefined;
+    try {
+      await this.ensureHost(session);
+    } catch (err: any) {
+      failure = err?.message || String(err);
+    }
+    const s = store.get(sessionId) ?? session;
+    // A form or approval from work outside a turn died with the old process
+    if (clearPendingRequests(s) && s.state === 'blocked') s.state = 'needs_you';
+    if (failure) {
+      s.isAgentRunning = false;
+      s.activeTerminalId = undefined;
+    }
+    s.turns.push({
+      id: `sys-${Date.now()}`,
+      role: 'system',
+      content: failure
+        ? `⚠️ Claude in Chrome ${enabled ? 'on' : 'off'}, but Claude did not start again: ${failure}. Your next message tries again.`
+        : enabled
+          ? '🌐 Claude in Chrome on: restarted Claude, continuing the same session.'
+          : '🌐 Claude in Chrome off: restarted Claude, continuing the same session.',
+      timestamp: Date.now(),
+    });
+    return this.saveSettingChange(s, 'sessionChromeUpdated', { chrome: enabled, turns: s.turns, state: s.state, isAgentRunning: s.isAgentRunning });
   }
 
   private saveSettingChange(session: AcpSession, type: string, patch: Partial<AcpSession>): AcpSession {

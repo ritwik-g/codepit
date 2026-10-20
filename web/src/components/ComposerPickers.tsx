@@ -311,6 +311,16 @@ export const EffortPicker: React.FC<{ session: AcpSession; agents: AgentDescript
         onSelect: () => run('ultracode', () => api.setSessionUltra(session.id, { ultracode: !session.ultracode })),
       });
     }
+    rows.push({
+      key: 'chrome',
+      label: 'Claude in Chrome',
+      icon: 'globe',
+      description: session.chrome
+        ? 'Claude can use your Chrome; click to turn off (restarts Claude, same session)'
+        : 'Let Claude drive your Chrome via its extension (restarts Claude, same session)',
+      selected: Boolean(session.chrome),
+      onSelect: () => run('Claude in Chrome', () => api.setSessionChrome(session.id, !session.chrome)),
+    });
     sections.push({ title: 'Claude', rows });
   }
   if (sections.length === 0) return null;
@@ -322,11 +332,12 @@ export const EffortPicker: React.FC<{ session: AcpSession; agents: AgentDescript
     windowTokens ? formatWindow(windowTokens) : '',
     session.agentId === 'claude' && session.ultracode ? 'Ultracode' : '',
     session.agentId === 'claude' && session.ultrathinkNext ? 'Ultrathink' : '',
+    session.agentId === 'claude' && session.chrome ? 'Chrome' : '',
   ].filter(Boolean);
 
   return (
     <div className="pick-anchor" ref={rootRef}>
-      <PickPill open={open} onToggle={() => setOpen(!open)} icon={fast?.enabled ? 'zap' : undefined} title="Reasoning effort, context window, fast mode, ultrathink and ultracode">
+      <PickPill open={open} onToggle={() => setOpen(!open)} icon={fast?.enabled ? 'zap' : undefined} title="Reasoning effort, context window, fast mode, ultrathink, ultracode and Claude in Chrome">
         {parts.join(' · ')}
       </PickPill>
       {open && <PickList label="Reasoning and context" sections={sections} onClose={() => setOpen(false)} className="pick-effort" />}

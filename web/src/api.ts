@@ -262,6 +262,9 @@ export const api = {
     request<{ versions: Record<string, AgentVersionInfo> }>(`/api/agents/versions${refresh ? '?refresh=1' : ''}`),
   /** Run the agent CLI's own update. */
   updateAgent: (agentId: string) => request<{ version?: AgentVersionInfo }>(`/api/agents/${agentId}/update`, { method: 'POST' }),
+  /** Claude in Chrome on or off; a running Claude restarts in the same session. */
+  setSessionChrome: (id: string, enabled: boolean) =>
+    request<{ session: AcpSession }>(`/api/sessions/${id}/chrome`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
   setSessionFastMode: (id: string, enabled: boolean) =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/fast-mode`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
   /** Starred models, "<agentId>:<model>", shared by every device. */

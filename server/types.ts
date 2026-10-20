@@ -443,6 +443,8 @@ export interface AcpSession {
   mode?: string;
   /** Fast mode chosen here, applied when the agent starts. */
   fastMode?: boolean;
+  /** Claude in Chrome (Claude Code's --chrome), read only at launch: a change restarts the agent. */
+  chrome?: boolean;
   /** The slash commands and skills the agent last reported. */
   agentCommands?: AgentCommand[];
   /** The running agent's own session id (for Claude, its Claude Code session). */

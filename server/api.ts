@@ -630,6 +630,20 @@ apiRouter.put('/sessions/:id/mode', async (req: Request, res: Response) => {
   }
 });
 
+// Claude in Chrome on or off; restarts a running Claude in the same session
+apiRouter.put('/sessions/:id/chrome', async (req: Request, res: Response) => {
+  const { enabled } = req.body ?? {};
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'enabled must be true or false' });
+    return;
+  }
+  try {
+    res.json({ session: await sessionManager.setSessionChrome(sid(req), enabled) });
+  } catch (err: any) {
+    res.status(err instanceof TurnInFlightError ? 409 : err instanceof InvalidOptionError ? 400 : 500).json({ error: err.message });
+  }
+});
+
 // Fast mode on or off
 apiRouter.put('/sessions/:id/fast-mode', async (req: Request, res: Response) => {
   const { enabled } = req.body ?? {};
