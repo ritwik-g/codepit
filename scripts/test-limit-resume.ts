@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 /**
  * Resuming later: Claude's usage-limit messages and reset times are read right; a turn
- * stopped on the 5-hour limit is resumed at the reset under "Auto", offered under "Ask" and
- * left alone under "Off" or on a weekly limit; every due session resumes at once; a message
+ * stopped on the 5-hour or weekly limit is resumed at the reset under "Auto", offered under
+ * "Ask" and left alone under "Off" or when out of credits; a limited session is marked for the
+ * sidebar until something is sent; every due session resumes at once; a message
  * of the user's own replaces the resume; repeated limit hits stop resuming by themselves;
  * a manual pause stops the running turn and sends the user's message at their time; and the
  * HTTP routes. Runs against a scripted agent.
@@ -130,7 +131,15 @@ function pure(): void {
   const askd = decideLimitResume({ hit, mode: 'ask', now, streak: 0 });
   check('Ask: offered, not armed', askd?.armed === false && askd.at === auto?.at, askd);
   check('Off: nothing', decideLimitResume({ hit, mode: 'off', now, streak: 0 }) === null);
-  check('weekly: nothing', decideLimitResume({ hit: weekly!, mode: 'auto', now, streak: 0 }) === null);
+  const weeklyLater = { ...weekly!, resetsAt: now + 3 * 24 * HOUR };
+  const weeklyAuto = decideLimitResume({ hit: weeklyLater, mode: 'auto', now, streak: 0 });
+  check('weekly: armed a minute past its reset', weeklyAuto?.armed === true && weeklyAuto.at === weeklyLater.resetsAt + RESUME_BUFFER_MS && weeklyAuto.limitWindow === 'weekly', weeklyAuto);
+  check('weekly under Ask: offered', decideLimitResume({ hit: weeklyLater, mode: 'ask', now, streak: 0 })?.armed === false);
+  const weeklyNoTime = decideLimitResume({ hit: { window: 'weekly', message: "You've hit your weekly limit" }, mode: 'auto', now, streak: 0, fiveHourResetsAt: now + HOUR });
+  check('weekly: the 5-hour reset from /usage is not used', weeklyNoTime?.armed === false && weeklyNoTime.at === undefined && Boolean(weeklyNoTime.note), weeklyNoTime);
+  const weeklyEvent = decideLimitResume({ hit: { window: 'unknown', message: 'usage limit reached' }, mode: 'auto', now, streak: 0, rejected: { type: 'seven_day', resetsAt: now + 2 * 24 * HOUR, seenAt: now } });
+  check('a seven_day rate-limit event makes an unnamed limit weekly, with its reset', weeklyEvent?.armed === true && weeklyEvent.limitWindow === 'weekly' && weeklyEvent.resetsAt === now + 2 * 24 * HOUR, weeklyEvent);
+  check('credits: nothing', decideLimitResume({ hit: { window: 'credits', message: "You're out of usage credits" }, mode: 'auto', now, streak: 0 }) === null);
   const eventReset = now + 2 * HOUR;
   const fromEvent = decideLimitResume({ hit: { window: 'unknown', message: 'usage limit reached' }, mode: 'auto', now, streak: 0, rejected: { type: 'five_hour', resetsAt: eventReset, seenAt: now } });
   check('the rate-limit event names the window and the reset', fromEvent?.armed === true && fromEvent.resetsAt === eventReset, fromEvent);
@@ -216,6 +225,7 @@ async function main(): Promise<void> {
   check('saying yes arms it and keeps Claude\'s message', resumeOf(d)?.armed === true && resumeOf(d)?.reason === 'limit' && Boolean(resumeOf(d)?.limitMessage), resumeOf(d));
   await send(d, 'my own message');
   check('a message of the user\'s own replaces it', resumeOf(d) === null);
+  check('and the session is no longer marked as limited', summary(d)?.limitHit === null, summary(d)?.limitHit);
 
   const e = await newSession();
   await send(e, `hit-limit:${resetA}`);
@@ -225,9 +235,20 @@ async function main(): Promise<void> {
   check('switching to Off drops it', resumeOf(e) === null);
   await send(e, `hit-limit:${resetA}`);
   check('Off: nothing kept', resumeOf(e) === null);
+  check('Off: the sidebar still marks it as limited', summary(e)?.limitHit?.window === 'five_hour', summary(e)?.limitHit);
   sessionManager.setLimitResumeMode('auto');
+  const weeklyReset = Date.now() + 2 * 24 * HOUR - (Date.now() % MIN);
+  await send(e, `hit-weekly:${weeklyReset}`);
+  const re = resumeOf(e);
+  check('a weekly limit is resumed a minute past its reset', re?.armed === true && re.at === weeklyReset + RESUME_BUFFER_MS && re.limitWindow === 'weekly', re);
+  check('the sidebar marks it weekly, with the reset', summary(e)?.limitHit?.window === 'weekly' && summary(e)?.limitHit?.resetsAt === weeklyReset, summary(e)?.limitHit);
   await send(e, 'hit-weekly');
-  check('a weekly limit is not resumed', resumeOf(e) === null && /weekly limit/.test(lastOf(e, 'agent')?.content || ''));
+  check('a weekly reset already past: offered with no time', resumeOf(e)?.armed === false && resumeOf(e)?.at === undefined, resumeOf(e));
+  // A session that stopped on the limit before CodePit kept limitHit: read from its last reply
+  delete store.get(e)!.limitHit;
+  check('an older limited session is found from its last reply', summary(e)?.limitHit?.window === 'weekly', summary(e)?.limitHit);
+  await send(e, 'hit-credits');
+  check('out of credits: never resumed, but marked', resumeOf(e) === null && summary(e)?.limitHit?.window === 'credits', { resume: resumeOf(e), hit: summary(e)?.limitHit });
 
   console.log('6a. A limit notice in the reply rather than an error');
   const t1 = await newSession();

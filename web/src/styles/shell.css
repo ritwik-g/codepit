@@ -437,6 +437,28 @@
   background: var(--surface-3);
 }
 
+/* Stopped on a usage limit and not resumed: a bar down the left edge, amber until a resume is set */
+.sb-row.is-limited {
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+
+.sb-row.is-limited.is-resuming {
+  box-shadow: inset 2px 0 0 var(--info);
+}
+
+.sb-row.is-limited .sb-row-title {
+  color: var(--text-2);
+}
+
+.sb-row-limit.ui-badge {
+  flex-shrink: 0;
+  height: 16px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .sb-row-top {
   display: flex;
   align-items: center;

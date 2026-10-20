@@ -126,7 +126,7 @@ export const ResumeBanner: React.FC<{
             disabled={busy !== null}
             loading={busy === 'auto'}
             onClick={() => run('auto', () => api.setLimitResumeMode('auto'))}
-            title="Resume every session by itself when the 5-hour limit resets. Change it under Accounts and usage."
+            title="Resume every session by itself when its usage limit resets. Change it under Accounts and usage."
           >
             Always resume automatically
           </Button>
@@ -187,7 +187,8 @@ export const ResumeAtModal: React.FC<{
       { id: '3h', label: '3 hours', at: now + 3 * HOUR },
     ];
     const reset = current?.resetsAt ?? fiveHourResetsAt;
-    if (reset && reset > now) list.push({ id: 'reset', label: 'When the 5-hour limit resets', at: reset + MIN });
+    const resetLabel = current?.resetsAt ? 'When the limit resets' : 'When the 5-hour limit resets';
+    if (reset && reset > now) list.push({ id: 'reset', label: resetLabel, at: reset + MIN });
     list.push({ id: 'tomorrow', label: 'Tomorrow, 9 am', at: atHour(1, 9) });
     return list;
   }, [current?.resetsAt, fiveHourResetsAt]);
@@ -259,7 +260,7 @@ const MODE_OPTIONS: Array<{ value: LimitResumeMode; label: string; title: string
   { value: 'auto', label: 'Resume automatically', title: 'Send “Continue” by itself once the limit resets' },
 ];
 
-/** What every session does when Claude or Codex hits its 5-hour limit. */
+/** What every session does when Claude or Codex hits a usage limit that resets (5-hour or weekly). */
 export const LimitResumeSetting: React.FC = () => {
   const [mode, setMode] = useState<LimitResumeMode | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -279,8 +280,8 @@ export const LimitResumeSetting: React.FC = () => {
   };
   return (
     <div className="limit-resume-setting">
-      <span className="acct-mode-label">When Claude or Codex hits its 5-hour limit</span>
-      {mode && <Segmented<LimitResumeMode> size="sm" label="When Claude or Codex hits its 5-hour limit" value={mode} onChange={change} options={MODE_OPTIONS} />}
+      <span className="acct-mode-label">When Claude or Codex hits a 5-hour or weekly limit</span>
+      {mode && <Segmented<LimitResumeMode> size="sm" label="When Claude or Codex hits a 5-hour or weekly limit" value={mode} onChange={change} options={MODE_OPTIONS} />}
       {error && <div className="acct-inline-error">{error}</div>}
     </div>
   );

@@ -19,7 +19,7 @@ import { logQueueEvent } from '../queue-log.js';
 import { decideLimitResume, limitNoticeInText, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit, type UsageLimitHit } from '../limit-resume.js';
 import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, subagentStopRequest, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
-import type { AcpSession, ContextSentRecord, PendingContext, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
+import type { AcpSession, ContextSentRecord, PendingContext, LimitHit, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
 /**
  * Format conversation history into a structured briefing block for context transfer.
@@ -581,6 +581,7 @@ export class SessionManager extends EventEmitter {
       cacheExpiresAt: promptCacheExpiry(s),
       // null rather than absent, so the client's merge clears one that was sent or cancelled
       scheduledResume: s.scheduledResume ?? null,
+      limitHit: s.state === 'working' ? null : (s.limitHit ?? limitHitInLastTurn(s)),
     }));
   }
 
@@ -1273,8 +1274,9 @@ export class SessionManager extends EventEmitter {
     // This turn's own end decides about compaction now
     this.autoCompactAfterBackground.delete(sessionId);
     this.rejectedLimits.delete(sessionId);
-    // A message sent now replaces one waiting to be sent later
+    // A message sent now replaces one waiting to be sent later, and resumes a limited session
     session.scheduledResume = null;
+    session.limitHit = null;
 
     const savedAttachments = saveAttachments(sessionId, attachments);
 
@@ -1595,13 +1597,16 @@ export class SessionManager extends EventEmitter {
   // ------------------------------------------------------------ Resuming later
 
   /**
-   * Claude stopped the turn on a usage limit: under "Ask" or "Auto", keep a resume for when
-   * the 5-hour window resets. The caller saves the session and tells the views.
+   * Claude stopped the turn on a usage limit: mark the session as limited, and under "Ask" or
+   * "Auto" keep a resume for when the limit resets. The caller saves the session and tells the views.
    */
   private parkOnUsageLimit(s: AcpSession, hit: UsageLimitHit): void {
     const now = Date.now();
     const rejected = this.rejectedLimits.get(s.id);
     this.rejectedLimits.delete(s.id);
+    if (s.limitHit?.message !== hit.message) {
+      s.limitHit = { window: hit.window, message: hit.message, at: now, ...(hit.resetsAt ? { resetsAt: hit.resetsAt } : {}) };
+    }
     // The same notice seen again (an error and its text, or a repeated message): already handled
     if (s.scheduledResume?.reason === 'limit' && s.scheduledResume.limitMessage === hit.message && now - s.scheduledResume.createdAt < 10 * 60_000) return;
     const claude = isClaudeSession(s);
@@ -1622,8 +1627,11 @@ export class SessionManager extends EventEmitter {
     if (!resume) return;
     s.scheduledResume = resume;
     console.log(`[session-mgr] ${s.id} hit the usage limit; ${resume.armed ? `resumes at ${new Date(resume.at!).toISOString()}` : 'resume offered'}`);
-    if (resume.at || !claude) return;
-    // No reset time in the message or the events: Claude's /usage may know it
+    // A rate-limit event can name the window and reset the message left out
+    if (s.limitHit && resume.limitWindow) s.limitHit.window = resume.limitWindow;
+    if (s.limitHit && resume.resetsAt) s.limitHit.resetsAt = resume.resetsAt;
+    // No reset time in the message or the events: Claude's /usage may know the 5-hour one
+    if (resume.at || !claude || resume.limitWindow === 'weekly') return;
     refreshClaudeRateLimitsAsync()
       .then((limits) => {
         const resetsAt = limits.fiveHour?.resetsAtMs;
@@ -1634,6 +1642,7 @@ export class SessionManager extends EventEmitter {
         // The "did not say when" note no longer holds; the streak one still does
         current.scheduledResume = { ...current.scheduledResume, at: resetsAt + RESUME_BUFFER_MS, resetsAt, armed: mode === 'auto' && !tooMany };
         if (!tooMany) delete current.scheduledResume.note;
+        if (current.limitHit) current.limitHit.resetsAt = resetsAt;
         store.save(current, { touch: false });
         this.emit('sessionsUpdated', this.listSessions());
       })
@@ -1651,11 +1660,17 @@ export class SessionManager extends EventEmitter {
       // A message CodePit sent since then is checked when its turn ends
       if (this.activePrompts.has(sessionId)) return;
       const s = store.get(sessionId);
-      const hit = s ? limitNoticeInText(lastAgentText(s)) : null;
-      if (!s || !hit) return;
-      const before = s.scheduledResume;
-      this.parkOnUsageLimit(s, hit);
-      if (s.scheduledResume === before) return;
+      if (!s) return;
+      const hit = limitNoticeInText(lastAgentText(s));
+      if (!hit) {
+        // The agent carried on by itself past the limit: no longer limited
+        if (!s.limitHit) return;
+        s.limitHit = null;
+      } else {
+        const before = [s.scheduledResume, s.limitHit];
+        this.parkOnUsageLimit(s, hit);
+        if (s.scheduledResume === before[0] && s.limitHit === before[1]) return;
+      }
       store.save(s, { touch: false, now: true });
       this.emit('sessionsUpdated', this.listSessions());
     }, LIMIT_NOTICE_QUIET_MS);
@@ -1991,6 +2006,7 @@ export class SessionManager extends EventEmitter {
     delete session.restore;
     // Stopped on purpose: a resume must not start it again
     session.scheduledResume = null;
+    session.limitHit = null;
     clearPendingRequests(session);
     session.activeTerminalId = undefined;
     session.isAgentRunning = false;
@@ -2193,7 +2209,10 @@ export class SessionManager extends EventEmitter {
 
     if (!hasAgent(newAgentId)) throw new Error(`Unknown agent: ${newAgentId}`);
     // A resume was meant for the agent it waited on, not the one switched to
-    if (newAgentId !== session.agentId) session.scheduledResume = null;
+    if (newAgentId !== session.agentId) {
+      session.scheduledResume = null;
+      session.limitHit = null;
+    }
     const prevAgentName = session.agentName;
     const targetAgent = getAgent(newAgentId);
     let targetModel = newModel || targetAgent.defaultModel;
@@ -3888,6 +3907,18 @@ export function adoptClaudeSession(s: AcpSession, excludeTurnId?: string): strin
 }
 
 /** The text of the latest agent reply, where a limit notice would be. */
+/**
+ * A session's last reply was a usage-limit notice, for sessions that stopped on one before
+ * CodePit kept limitHit. The error form ("⚠️ Agent error: Internal error: You've hit …") counts too.
+ */
+function limitHitInLastTurn(s: AcpSession): LimitHit | null {
+  const last = s.turns[s.turns.length - 1];
+  if (!last || last.role !== 'agent') return null;
+  const text = (last.content || '').replace(/^\s*⚠️\s*(?:(?:Agent|Internal) error:\s*)*/i, '');
+  const hit = limitNoticeInText(text, last.timestamp);
+  return hit ? { window: hit.window, message: hit.message, at: last.timestamp, ...(hit.resetsAt ? { resetsAt: hit.resetsAt } : {}) } : null;
+}
+
 function lastAgentText(s: AcpSession): string | undefined {
   for (let i = s.turns.length - 1; i >= 0; i--) {
     const t = s.turns[i];

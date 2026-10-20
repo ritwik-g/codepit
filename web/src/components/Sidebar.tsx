@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { SessionSummary } from '../types';
+import type { LimitHit, SessionSummary } from '../types';
 import { VendorIcon } from './VendorLogos';
 import { Badge, Button, Icon, IconButton, Input, Kbd, Spinner, StatusDot, type Tone } from '../ui';
 import { ThemeMenu } from './ThemeMenu';
@@ -24,14 +24,20 @@ export interface SessionStatus {
 /** Label and tone for a session's state, per the table in DESIGN.md. */
 export function sessionStatus(
   s: Pick<SessionSummary, 'state' | 'isAgentRunning' | 'compacting' | 'workingInBackground'> &
-    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume'>>
+    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume' | 'limitHit'>>
 ): SessionStatus {
   if (s.compacting && s.state !== 'blocked') return { label: 'Compacting', tone: 'accent', pulse: true };
   // Waiting to send a message later: after the usage limit resets, or when a pause ends
   const resume = s.scheduledResume;
   if (resume && s.state !== 'blocked' && s.state !== 'working') {
     if (resume.armed && resume.at) return { label: `Resumes ${shortTime(resume.at)}`, tone: 'info', pulse: false };
-    if (resume.reason === 'limit') return { label: 'Usage limit reached', tone: 'warn', pulse: false };
+    if (resume.reason === 'limit' && !s.limitHit) return { label: 'Usage limit reached', tone: 'warn', pulse: false };
+  }
+  // Stopped on a usage limit and nothing sent since
+  if (s.limitHit && s.state !== 'blocked' && s.state !== 'working') {
+    const resetsAt = s.limitHit.resetsAt ?? resume?.resetsAt;
+    const label = limitName(s.limitHit) + (resetsAt && resetsAt > Date.now() ? ` · resets ${shortTime(resetsAt)}` : '');
+    return { label, tone: 'warn', pulse: false };
   }
   // Its agent was running when CodePit closed: offered back with Restore
   if (s.restore && s.isAgentRunning === false && s.state !== 'blocked') return { label: 'Was running', tone: 'warn', pulse: false };
@@ -61,6 +67,20 @@ export function sessionStatus(
 
 export const needsAttention = (s: SessionSummary) =>
   s.state === 'blocked' || (s.state === 'needs_you' && !s.workingInBackground && !s.scheduledResume?.armed) || s.state === 'crashed';
+
+/** "Weekly limit", "5-hour limit": which usage limit a session stopped on. */
+export function limitName(hit: Pick<LimitHit, 'window'>): string {
+  switch (hit.window) {
+    case 'weekly':
+      return 'Weekly limit';
+    case 'five_hour':
+      return '5-hour limit';
+    case 'credits':
+      return 'Out of credits';
+    default:
+      return 'Usage limit';
+  }
+}
 
 /** "3:41 PM" today, "Thu 9:00 AM" on another day. */
 export function shortTime(ts: number): string {
@@ -511,9 +531,11 @@ const SessionRow: React.FC<{
   const vitals = sessionVitals(session, now);
   // The open session counts as seen; the ring is for the others
   const unseen = !isSelected && isUnseen(session);
+  const limited = Boolean(session.limitHit) && session.state !== 'working';
+  const resumeAt = session.scheduledResume?.armed ? session.scheduledResume.at : undefined;
   return (
     <div
-      className={`sb-row ${isSelected ? 'is-selected' : ''}`}
+      className={`sb-row ${isSelected ? 'is-selected' : ''} ${limited ? (resumeAt ? 'is-limited is-resuming' : 'is-limited') : ''}`}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -543,6 +565,16 @@ const SessionRow: React.FC<{
           </span>
         )}
         <PriorityBadge priority={session.user.priority} />
+        {limited && (
+          <Badge
+            tone={resumeAt ? 'info' : 'warn'}
+            icon={resumeAt ? 'clock' : 'gauge'}
+            className="sb-row-limit"
+            title={`${status.label}${resumeAt ? '' : ' · not resumed'}\n${session.limitHit!.message}`}
+          >
+            {limitName(session.limitHit!)}
+          </Badge>
+        )}
         {isRestorable(session) && <RowRestoreButton session={session} />}
         <span className="sb-row-time" title={new Date(session.updatedAt).toLocaleString()}>
           {relativeTime(session.updatedAt)}

@@ -94,7 +94,7 @@ apiRouter.put('/settings/favorite-models', (req: Request, res: Response) => {
   res.json({ favorites: readFavoriteModels() });
 });
 
-// What to do when Claude hits its 5-hour usage limit: 'off' | 'ask' | 'auto'
+// What to do when Claude hits a usage limit that resets (5-hour or weekly): 'off' | 'ask' | 'auto'
 apiRouter.get('/settings/limit-resume', (_req: Request, res: Response) => {
   res.json({ mode: readLimitResumeMode() });
 });

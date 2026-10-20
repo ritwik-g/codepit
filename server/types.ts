@@ -511,6 +511,8 @@ export interface AcpSession {
   limitResumeStreak?: number;
   /** When the last limit resume was sent, until its turn ends. */
   limitResumeSentAt?: number;
+  /** The last turn stopped on a usage limit; cleared when a message is sent. */
+  limitHit?: LimitHit | null;
 }
 
 /** An agent process this run of CodePit started and has not stopped: on disk while it runs, so a crash leaves it behind. */
@@ -541,11 +543,25 @@ export interface RestoreOffer {
   error?: string;
 }
 
-/** What happens when Claude stops a turn on its 5-hour usage limit. */
+/** What happens when Claude stops a turn on a usage limit that resets (5-hour or weekly). */
 export type LimitResumeMode = 'off' | 'ask' | 'auto';
 
+/** Which usage limit an agent stopped on; 'credits' covers limits that never reset on their own. */
+export type LimitWindow = 'five_hour' | 'weekly' | 'credits' | 'unknown';
+
+/** The last turn stopped on a usage limit and nothing has been sent since. */
+export interface LimitHit {
+  window: LimitWindow;
+  /** What the agent said, e.g. "You've hit your weekly limit · resets Oct 18 at 3:30pm". */
+  message: string;
+  /** When it was hit. */
+  at: number;
+  /** When the limit resets, when the agent said. */
+  resetsAt?: number;
+}
+
 /**
- * A message the session sends by itself later: after Claude's 5-hour limit resets, or at a
+ * A message the session sends by itself later: after Claude's usage limit resets, or at a
  * time the user picked when pausing it. Cleared when it is sent, cancelled, or the user
  * sends a message of their own.
  */
@@ -560,8 +576,10 @@ export interface ScheduledResume {
   createdAt: number;
   /** limit: what Claude said, e.g. "You've hit your session limit · resets 3:40pm". */
   limitMessage?: string;
-  /** limit: when the 5-hour window resets. */
+  /** limit: when the limit resets. */
   resetsAt?: number;
+  /** limit: which limit it was. */
+  limitWindow?: LimitWindow;
   /** Why the last attempt to send it failed, or why it was not armed. */
   note?: string;
 }
@@ -621,6 +639,8 @@ export interface SessionSummary {
    */
   cacheExpiresAt?: number;
   scheduledResume?: ScheduledResume | null;
+  /** Stopped on a usage limit and not resumed since; null rather than absent so merges clear it. */
+  limitHit?: LimitHit | null;
 }
 
 // ------------------------------------------------------------------ MCP

@@ -337,10 +337,21 @@ export interface RestoreOffer {
   error?: string;
 }
 
-/** What happens when Claude stops a turn on its 5-hour usage limit. */
+/** What happens when Claude stops a turn on a usage limit that resets (5-hour or weekly). */
 export type LimitResumeMode = 'off' | 'ask' | 'auto';
 
-/** A message the session sends by itself later: after the 5-hour limit resets, or when a pause ends. */
+/** Which usage limit an agent stopped on; 'credits' covers limits that never reset on their own. */
+export type LimitWindow = 'five_hour' | 'weekly' | 'credits' | 'unknown';
+
+/** The last turn stopped on a usage limit and nothing has been sent since. */
+export interface LimitHit {
+  window: LimitWindow;
+  message: string;
+  at: number;
+  resetsAt?: number;
+}
+
+/** A message the session sends by itself later: after a usage limit resets, or when a pause ends. */
 export interface ScheduledResume {
   reason: 'limit' | 'manual';
   /** When it is sent. Absent only for a limit whose reset time is not known. */
@@ -351,8 +362,10 @@ export interface ScheduledResume {
   createdAt: number;
   /** limit: what Claude said. */
   limitMessage?: string;
-  /** limit: when the 5-hour window resets. */
+  /** limit: when the limit resets. */
   resetsAt?: number;
+  /** limit: which limit it was. */
+  limitWindow?: LimitWindow;
   note?: string;
 }
 
@@ -504,6 +517,8 @@ export interface SessionSummary {
   /** Estimated: when the agent's prompt cache lapses (Claude only; no agent reports it). */
   cacheExpiresAt?: number;
   scheduledResume?: ScheduledResume | null;
+  /** Stopped on a usage limit and not resumed since. */
+  limitHit?: LimitHit | null;
 }
 
 export interface VendorRateLimitWindow {

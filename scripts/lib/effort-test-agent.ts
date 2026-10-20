@@ -190,13 +190,23 @@ async function main() {
         : null;
       const send = (update: Record<string, unknown>) => ctx.client.notify(acp.methods.client.session.update, { sessionId, update });
       // Like Claude stopping on a usage limit: "hit-limit:<reset ms>" is the 5-hour one, with
-      // its rate-limit event; "hit-weekly" the weekly one, with no event
+      // its rate-limit event; "hit-weekly[:<reset ms>]" the weekly one, with no event; "hit-credits"
+      // a limit that never resets on its own
       const limit = /hit-limit:(\d+)/.exec(text);
       if (limit) {
         await send({ sessionUpdate: 'usage_update', used: 1000, size: 200_000, _meta: { '_claude/rateLimit': { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Number(limit[1]) } } });
         throw acp.RequestError.internalError(undefined, "You've hit your session limit · resets 3:40pm (UTC)");
       }
-      if (text.includes('hit-weekly')) throw acp.RequestError.internalError(undefined, "You've hit your weekly limit · resets Oct 9, 10am (UTC)");
+      const weekly = /hit-weekly(?::(\d+))?/.exec(text);
+      if (weekly) {
+        const reset = weekly[1] ? new Date(Number(weekly[1])) : null;
+        // Claude's own form, e.g. "Oct 18 at 3:30pm (Asia/Calcutta)"
+        const when = reset
+          ? `${reset.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })} ${reset.getUTCDate()} at ${reset.getUTCHours() % 12 || 12}:${String(reset.getUTCMinutes()).padStart(2, '0')}${reset.getUTCHours() < 12 ? 'am' : 'pm'} (UTC)`
+          : 'Oct 9, 10am (UTC)';
+        throw acp.RequestError.internalError(undefined, `You've hit your weekly limit · resets ${when}`);
+      }
+      if (text.includes('hit-credits')) throw acp.RequestError.internalError(undefined, "You're out of usage credits · purchase more to continue");
       // A limit notice as the reply of a turn that ends normally ("say-limit:<notice>"), or in a
       // turn the agent starts by itself a moment later ("later-limit:<notice>")
       const said = /say-limit:(.+)$/s.exec(text);

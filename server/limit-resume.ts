@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import { ensurePrivateDir, getAppDir, getSettingsFile, FILE_MODE } from './paths.js';
-import type { LimitResumeMode, ScheduledResume } from './types.js';
+import type { LimitResumeMode, LimitWindow, ScheduledResume } from './types.js';
 
-// Resuming a session later: after an agent stops on its 5-hour usage limit, or at a
+export type { LimitWindow };
+
+// Resuming a session later: after an agent stops on a usage limit (5-hour or weekly), or at a
 // time the user picked when pausing it. What is sent is an ordinary message, so the agent
 // session carries on with everything it had.
 
@@ -18,8 +20,6 @@ const FIVE_HOUR_WINDOW_MS = 5 * 60 * 60_000 + 15 * 60_000;
 /** The longest a manual pause may run. */
 const MAX_PAUSE_MS = 30 * 24 * 60 * 60_000;
 const MAX_PROMPT_CHARS = 20_000;
-
-export type LimitWindow = 'five_hour' | 'weekly' | 'credits' | 'unknown';
 
 export interface UsageLimitHit {
   window: LimitWindow;
@@ -163,8 +163,8 @@ export interface LimitResumeInput {
 
 /**
  * What to do about a turn an agent stopped on a usage limit: a resume to schedule (armed under
- * "Auto", waiting for a yes under "Ask"), or null when the setting is off or the limit is
- * not the 5-hour one.
+ * "Auto", waiting for a yes under "Ask"), or null when the setting is off or the limit does
+ * not reset on its own (credits, seats).
  */
 export function decideLimitResume({ hit, mode, now, rejected, fiveHourResetsAt, streak }: LimitResumeInput): ScheduledResume | null {
   if (mode === 'off') return null;
@@ -174,9 +174,12 @@ export function decideLimitResume({ hit, mode, now, rejected, fiveHourResetsAt, 
     if (recentRejection.type === 'five_hour') window = 'five_hour';
     else if (recentRejection.type.startsWith('seven_day')) window = 'weekly';
   }
-  if (window === 'weekly' || window === 'credits') return null;
-  const fromEvent = recentRejection?.type === 'five_hour' ? recentRejection.resetsAt : undefined;
-  const candidates = [fromEvent, hit.resetsAt, fiveHourResetsAt].filter((t): t is number => typeof t === 'number' && t > now);
+  if (window === 'credits') return null;
+  const weekly = window === 'weekly';
+  const eventWindow = recentRejection?.type && (weekly ? recentRejection.type.startsWith('seven_day') : recentRejection.type === 'five_hour');
+  const fromEvent = eventWindow ? recentRejection!.resetsAt : undefined;
+  // /usage's 5-hour reset says nothing about a weekly or per-model limit
+  const candidates = [fromEvent, hit.resetsAt, weekly ? undefined : fiveHourResetsAt].filter((t): t is number => typeof t === 'number' && t > now);
   const resetsAt = candidates[0];
   // A limit that does not say which: the 5-hour one when it resets within a 5-hour window
   if (window === 'unknown' && !(resetsAt && resetsAt - now <= FIVE_HOUR_WINDOW_MS)) return null;
@@ -189,6 +192,7 @@ export function decideLimitResume({ hit, mode, now, rejected, fiveHourResetsAt, 
     prompt: RESUME_PROMPT,
     createdAt: now,
     limitMessage: hit.message,
+    limitWindow: window,
     ...(tooMany
       ? { note: `It resumed ${streak} times and hit the limit again straight away each time, so it waits for you now.` }
       : !at
@@ -213,7 +217,7 @@ export function isLimitResumeMode(v: unknown): v is LimitResumeMode {
   return v === 'off' || v === 'ask' || v === 'auto';
 }
 
-/** What to do when Claude or Codex hits its 5-hour limit, for every session; kept in settings.json. */
+/** What to do when Claude or Codex hits a usage limit, for every session; kept in settings.json. */
 export function readLimitResumeMode(): LimitResumeMode {
   try {
     const parsed = JSON.parse(fs.readFileSync(getSettingsFile(), 'utf8'));
