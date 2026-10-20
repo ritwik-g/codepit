@@ -230,7 +230,9 @@ export interface ToolCallRecord {
 export type TurnSegment =
   | { kind: 'text'; id: string; text: string; messageId?: string }
   | { kind: 'thought'; id: string; text: string }
-  | { kind: 'tool'; id: string; toolCallId: string };
+  | { kind: 'tool'; id: string; toolCallId: string }
+  /** A message another Claude session sent this one (SendMessage), as the agent received it. */
+  | { kind: 'peer'; id: string; from: string; fromName?: string; text: string };
 
 export interface PlanEntry {
   content: string;

@@ -5,6 +5,7 @@ import { execSync } from 'node:child_process';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import type { IncomingMessage } from 'node:http';
+import type { TurnSegment } from '../server/types.js';
 
 // Isolate test storage from the user's real ~/.codepit directory BEFORE any imports
 const testAppDir = path.join(os.tmpdir(), `codepit-test-app-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
@@ -924,6 +925,21 @@ async function runTests() {
     await waitForIdle(named.id);
     if (sessionManager.getSession(named.id)!.title !== 'My own name') throw new Error('An agent title must not replace a name the user gave');
     console.log('   ✅ Agent titles apply until the user renames; finished turns unseen until opened');
+
+    // 10g2. A message from another Claude session is shown where the agent received it
+    const peered = await sessionManager.createSession({ agentId: 'mock', cwd: testDir });
+    await waitForIdle(peered.id);
+    await sessionManager.sendPrompt(peered.id, 'Expect a peer message');
+    await waitForIdle(peered.id);
+    const peerTurn = sessionManager.getSession(peered.id)!.turns.at(-1)!;
+    const kinds = (peerTurn.segments || []).map((seg) => seg.kind).join(',');
+    if (kinds !== 'text,peer,text') throw new Error(`Peer message not filed between the replies: ${kinds}`);
+    const peerSeg = peerTurn.segments![1] as Extract<TurnSegment, { kind: 'peer' }>;
+    if (peerSeg.from !== 'codepit-a1' || peerSeg.fromName !== 'Fix & ship' || peerSeg.text !== 'Tests pass on **main**.') {
+      throw new Error(`Peer message parsed wrong: ${JSON.stringify(peerSeg)}`);
+    }
+    if (peerTurn.content?.includes('cross-session')) throw new Error('A peer message must not leak into the agent reply');
+    console.log('   ✅ Messages from other sessions are recorded in the turn that received them');
 
     // 10h. Claude's prompt cache: 1 hour on a subscription, 5 minutes on an API key; unknown for others
     const ended = 1_000_000;

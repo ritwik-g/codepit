@@ -16,6 +16,7 @@ export const Timeline: React.FC<{ segments: TurnSegment[]; calls: Map<string, To
       if (seg.text.trim()) blocks.push({ key: seg.id, text: seg.text });
       continue;
     }
+    if (seg.kind === 'peer') continue; // only the main conversation receives other sessions' messages
     const call = seg.kind === 'tool' ? calls.get(seg.toolCallId) : undefined;
     if (seg.kind === 'tool' && !call) continue;
     if (call?.isSubagent) {

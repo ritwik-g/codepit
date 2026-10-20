@@ -8,7 +8,7 @@ import { store } from '../store.js';
 import { getGitInfo } from '../git.js';
 import { hasRunningBackground, isWorkingInBackground, rankSession, sortSessions } from '../rank.js';
 import { getAgent, hasAgent, listAgents } from '../agents/registry.js';
-import { AcpClientHost, HostClosedError, TurnInFlightError, capToolOutput, normalizeClaudeModel, type ChunkMeta, type CompactionEvent, type ElicitationOutcome, type TurnUsage } from './client-host.js';
+import { AcpClientHost, HostClosedError, TurnInFlightError, capToolOutput, normalizeClaudeModel, type ChunkMeta, type CompactionEvent, type ElicitationOutcome, type PeerMessage, type TurnUsage } from './client-host.js';
 import { describeElicitationAnswer, validateElicitationContent } from './elicitation.js';
 import { HANDOFF_SUMMARY_PROMPT, autoCompactDecision, capSummary, contextWindowFor, latestCompaction, readAutoCompactDefault, writeAutoCompactDefault } from '../compaction.js';
 import { ptyManager } from '../pty-manager.js';
@@ -872,6 +872,16 @@ export class SessionManager extends EventEmitter {
       turn.thoughts = (turn.thoughts || '') + text;
       appendTextSegment(turn, 'thought', text);
       this.emit('sessionStream', { sessionId: s.id, type: 'thought', text, turn: withoutToolCalls(turn) });
+    });
+
+    host.on('peerMessage', (peer: PeerMessage) => {
+      const s = store.get(session.id);
+      if (!s || this.compactionRuns.has(session.id)) return;
+      // Filed where the agent read it: mid-reply, or starting the reply it wakes an idle session for
+      const turn = ensureAgentTurn(s);
+      turn.segments!.push({ kind: 'peer', id: `seg-${Date.now().toString(36)}-${turn.segments!.length}`, ...peer });
+      store.save(s);
+      this.emit('sessionStream', { sessionId: s.id, type: 'message', text: '', turn: withoutToolCalls(turn) });
     });
 
     host.on('message', (text: string, meta: ChunkMeta) => {

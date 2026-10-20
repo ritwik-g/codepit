@@ -553,6 +553,13 @@ export class AcpClientHost extends EventEmitter {
           if (text) this.emit('message', text, { ...chunkMeta(update), ...(subagentCall ? { parentToolUseId: subagentCall } : {}) });
           break;
         }
+        case 'user_message_chunk': {
+          // The agent's own echo of a prompt is never forwarded; what does arrive includes
+          // messages other Claude sessions sent this one, which the transcript shows
+          if (subagentCall || update.content?.type !== 'text') break;
+          for (const peer of parsePeerMessages(update.content.text || '')) this.emit('peerMessage', peer);
+          break;
+        }
         case 'tool_call': {
           const record: ToolCallRecord = {
             ...toolCallFields(update),
@@ -1292,6 +1299,34 @@ export interface ChunkMeta {
   messageId?: string;
   /** Present when a subagent produced the chunk: the tool call that spawned it. */
   parentToolUseId?: string;
+}
+
+export interface PeerMessage {
+  /** The sender's address, which the agent replies to. */
+  from: string;
+  fromName?: string;
+  text: string;
+}
+
+const PEER_MESSAGE = /<cross-session-message\b([^>]*)>\n?([\s\S]*?)\n?<\/cross-session-message>/g;
+
+const unescapeAttr = (v: string) =>
+  v.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+/** Messages from other Claude sessions, which arrive as user-role text wrapped in `<cross-session-message from="…">`. */
+export function parsePeerMessages(text: string): PeerMessage[] {
+  const out: PeerMessage[] = [];
+  for (const m of text.matchAll(PEER_MESSAGE)) {
+    const attrs = m[1];
+    const from = attrs.match(/\bfrom="([^"]*)"/)?.[1];
+    const fromName = attrs.match(/\bfrom-name="([^"]*)"/)?.[1];
+    out.push({
+      from: from ? unescapeAttr(from) : fromName ? unescapeAttr(fromName) : 'another session',
+      ...(fromName ? { fromName: unescapeAttr(fromName) } : {}),
+      text: m[2].trim(),
+    });
+  }
+  return out;
 }
 
 function chunkMeta(update: any): ChunkMeta {

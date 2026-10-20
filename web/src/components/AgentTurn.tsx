@@ -42,7 +42,8 @@ type ActivityItem = ThoughtSegment | ToolCallRecord;
 type Block =
   | { type: 'text'; seg: Extract<TurnSegment, { kind: 'text' }> }
   | { type: 'activity'; key: string; items: ActivityItem[] }
-  | { type: 'subagent'; call: ToolCallRecord };
+  | { type: 'subagent'; call: ToolCallRecord }
+  | { type: 'peer'; key: string; message: PeerMessageView };
 
 /**
  * Renders an agent turn in the order things happened: each message the agent
@@ -59,11 +60,20 @@ const AgentTurnBodyImpl: React.FC<AgentTurnBodyProps> = ({ turn, isActiveTurn, i
       if (seg.text.trim()) blocks.push({ type: 'text', seg });
       continue;
     }
+    if (seg.kind === 'peer') {
+      blocks.push({ type: 'peer', key: seg.id, message: { direction: 'in', peer: seg.fromName || seg.from, text: seg.text } });
+      continue;
+    }
     if (seg.kind === 'tool') {
       const call = calls.get(seg.toolCallId);
       if (!call) continue;
       if (call.isSubagent) {
         blocks.push({ type: 'subagent', call });
+        continue;
+      }
+      const sent = sentPeerMessage(call);
+      if (sent) {
+        blocks.push({ type: 'peer', key: seg.id, message: sent });
         continue;
       }
     }
@@ -87,6 +97,7 @@ const AgentTurnBodyImpl: React.FC<AgentTurnBodyProps> = ({ turn, isActiveTurn, i
         if (block.type === 'subagent') {
           return <SubagentCard key={block.call.id} call={block.call} childCalls={childrenOf(block.call.id)} />;
         }
+        if (block.type === 'peer') return <PeerMessageCard key={block.key} message={block.message} />;
         return (
           <ActivityGroup
             key={block.key}
@@ -111,6 +122,45 @@ const AgentTurnBodyImpl: React.FC<AgentTurnBodyProps> = ({ turn, isActiveTurn, i
 // Streaming replaces only the turn being updated, so memoizing on props keeps
 // every other turn from re-rendering on each chunk.
 export const AgentTurnBody = React.memo(AgentTurnBodyImpl);
+
+export interface PeerMessageView {
+  /** `out`: this session's SendMessage call; `in`: a message another session sent it. */
+  direction: 'in' | 'out';
+  peer: string;
+  text: string;
+  status?: ToolCallRecord['status'];
+  error?: string;
+}
+
+/** A SendMessage call to another Claude session, shown as the message it sent. */
+export function sentPeerMessage(call: ToolCallRecord): PeerMessageView | null {
+  if (call.toolName !== 'SendMessage') return null;
+  const input = toolInput(call);
+  const text = [input.message, input.content, input.text, input.summary].find((v) => typeof v === 'string' && v.trim());
+  if (typeof input.to !== 'string' || typeof text !== 'string') return null;
+  return { direction: 'out', peer: input.to, text, status: call.status, error: call.status === 'failed' ? call.error || call.output : undefined };
+}
+
+/** Messages between Claude sessions, tinted by direction so they stand out from the agent's own work. */
+export const PeerMessageCard: React.FC<{ message: PeerMessageView }> = ({ message }) => {
+  const out = message.direction === 'out';
+  const failed = message.status === 'failed';
+  return (
+    <div className={`peer-message is-${message.direction}${failed ? ' is-failed' : ''}`}>
+      <div className="peer-message-head">
+        <Icon name={out ? 'send' : 'inbox'} size={13} />
+        <span className="peer-message-label">{out ? 'Sent to' : 'Received from'}</span>
+        <span className="peer-message-peer">{message.peer}</span>
+        {(message.status === 'pending' || message.status === 'running') && <Spinner size={11} />}
+        {failed && <Badge tone="danger">Not sent</Badge>}
+      </div>
+      <div className="peer-message-body">
+        <MarkdownContent content={message.text} />
+      </div>
+      {failed && message.error && <div className="peer-message-error">{message.error}</div>}
+    </div>
+  );
+};
 
 const COLLAPSE_AFTER = 3;
 

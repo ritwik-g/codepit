@@ -476,6 +476,53 @@
 .diff-line.is-del { background: var(--danger-soft); color: var(--text); box-shadow: inset 2px 0 0 var(--danger); }
 .diff-line.is-del .diff-sign { color: var(--danger); }
 
+/* ===================================================== Session messages */
+
+/* Messages between Claude sessions: sent ones in blue, received ones in amber */
+.peer-message {
+  --peer: var(--info);
+  --peer-soft: var(--info-soft);
+  --peer-border: var(--info-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--peer-border);
+  border-left: 3px solid var(--peer);
+  border-radius: var(--radius-lg);
+  background: var(--peer-soft);
+}
+.peer-message.is-in {
+  --peer: var(--warn);
+  --peer-soft: var(--warn-soft);
+  --peer-border: var(--warn-border);
+}
+.peer-message.is-failed {
+  --peer: var(--danger);
+  --peer-soft: var(--danger-soft);
+  --peer-border: var(--danger-border);
+}
+.peer-message-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--peer);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.peer-message-label { flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.04em; }
+.peer-message-peer {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.peer-message-body { min-width: 0; color: var(--text); }
+.peer-message-error { color: var(--danger); font-size: var(--text-xs); white-space: pre-wrap; }
+
 /* ============================================================ Subagents */
 
 .subagent-card {
