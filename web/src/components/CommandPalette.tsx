@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { AcpSession, SessionSummary } from '../types';
+import type { SessionSummary } from '../types';
 import { api } from '../api';
 import { Modal } from './Modal';
 import { Icon, Kbd, Spinner, StatusDot, type IconName } from '../ui';
@@ -88,35 +88,6 @@ function sessionHaystack(s: SessionSummary): string {
   return [folderName(s.cwd), s.agentName, s.git?.branch, s.model, ...(s.user.tags || []).map((t) => `#${t}`)].filter(Boolean).join(' ');
 }
 
-/** A short excerpt around the first transcript hit for the query. */
-function transcriptSnippet(session: AcpSession, query: string): string | undefined {
-  const term = query.trim().toLowerCase().split(/\s+/)[0];
-  if (!term) return undefined;
-  const texts: string[] = [];
-  for (const turn of session.turns) {
-    if (turn.content) texts.push(turn.content);
-    for (const tc of turn.toolCalls || []) texts.push(tc.title);
-  }
-  for (const raw of texts) {
-    const text = raw.replace(/\s+/g, ' ');
-    const i = text.toLowerCase().indexOf(term);
-    if (i === -1) continue;
-    // Start and end on word boundaries so the excerpt doesn't open mid-word.
-    let start = Math.max(0, i - 36);
-    if (start > 0) {
-      const space = text.indexOf(' ', start);
-      start = space !== -1 && space < i ? space + 1 : start;
-    }
-    let end = Math.min(text.length, i + term.length + 60);
-    if (end < text.length) {
-      const space = text.lastIndexOf(' ', end);
-      end = space > i + term.length ? space : end;
-    }
-    return `${start > 0 ? '… ' : ''}${text.slice(start, end).trim()}${end < text.length ? ' …' : ''}`;
-  }
-  return undefined;
-}
-
 /** Positions of the first case-insensitive occurrence of `term` in `text`. */
 function termMatch(text: string, term?: string): number[] {
   if (!term) return [];
@@ -156,15 +127,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
-  const [transcriptHits, setTranscriptHits] = useState<{ query: string; sessions: AcpSession[] } | null>(null);
+  const [transcriptHits, setTranscriptHits] = useState<{ query: string; hits: { id: string; snippet?: string }[] } | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const requestSeq = useRef(0);
 
-  // Transcript search on the server, debounced. Only the newest request may
-  // update results, so a slow response for an old query can't overwrite it.
+  // Transcript search on the server, debounced. A newer query aborts the
+  // request in flight, and only the newest request may update results, so a
+  // slow response for an old query can't overwrite it.
   useEffect(() => {
     const q = query.trim();
     if (q.length < 2 || q.startsWith('#')) {
@@ -175,22 +147,26 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
     const seq = ++requestSeq.current;
     setSearching(true);
+    const controller = new AbortController();
     const timer = setTimeout(() => {
       api
-        .search(q)
+        .search(q, controller.signal)
         .then((res) => {
           if (seq !== requestSeq.current) return;
-          setTranscriptHits({ query: q, sessions: res.sessions });
+          setTranscriptHits({ query: q, hits: res.hits });
           setSearchError(null);
         })
         .catch((err) => {
-          if (seq === requestSeq.current) setSearchError(err.message || 'Search failed');
+          if (seq === requestSeq.current && err.name !== 'AbortError') setSearchError(err.message || 'Search failed');
         })
         .finally(() => {
           if (seq === requestSeq.current) setSearching(false);
         });
-    }, 160);
-    return () => clearTimeout(timer);
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [query]);
 
   const items = useMemo<Item[]>(() => {
@@ -264,7 +240,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (q && transcriptHits && transcriptHits.query === q) {
       const listed = new Set(out.filter((i) => i.kind === 'session').map((i) => (i as { session: SessionSummary }).session.id));
       const byId = new Map(sessions.map((s) => [s.id, s]));
-      for (const hit of transcriptHits.sessions) {
+      for (const hit of transcriptHits.hits) {
         if (listed.has(hit.id)) continue;
         const summary = byId.get(hit.id);
         if (!summary) continue;
@@ -275,7 +251,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           session: summary,
           score: 0,
           match: [],
-          snippet: transcriptSnippet(hit, q),
+          snippet: hit.snippet,
           term: q.toLowerCase().split(/\s+/)[0],
         });
         if (out.filter((i) => i.group === 'In transcripts').length >= 8) break;

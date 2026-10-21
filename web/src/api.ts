@@ -286,8 +286,8 @@ export const api = {
     request<{ ok: boolean }>(`/api/sessions/${id}`, {
       method: 'DELETE',
     }),
-  search: (query: string) =>
-    request<{ sessions: AcpSession[] }>(`/api/search?q=${encodeURIComponent(query)}`),
+  search: (query: string, signal?: AbortSignal) =>
+    request<{ hits: { id: string; snippet?: string }[] }>(`/api/search?q=${encodeURIComponent(query)}`, { signal }),
   getFolders: (basePath?: string) =>
     request<{
       current: string;

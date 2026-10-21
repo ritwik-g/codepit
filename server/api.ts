@@ -11,7 +11,7 @@ import { AgentNotRunningError, ElicitationAnswerError, InvalidOptionError, Nothi
 import { parseAutoCompact } from './compaction.js';
 import { isLimitResumeMode, parseScheduleRequest, readLimitResumeMode } from './limit-resume.js';
 import { TurnInFlightError } from './acp/client-host.js';
-import { searchSessions } from './search.js';
+import { searchTranscripts } from './search.js';
 import { getGitInfo } from './git.js';
 import { store } from './store.js';
 import {
@@ -754,8 +754,8 @@ apiRouter.delete('/sessions/:id', (req: Request, res: Response) => {
 // 12. Search
 apiRouter.get('/search', (req: Request, res: Response) => {
   const q = String(req.query.q || '');
-  const matches = searchSessions(q);
-  res.json({ sessions: matches });
+  const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
+  res.json({ hits: searchTranscripts(q, limit) });
 });
 
 // 13. Git info
