@@ -8,7 +8,8 @@ import { store } from '../store.js';
 import { getGitInfo } from '../git.js';
 import { hasRunningBackground, isWorkingInBackground, rankSession, sortSessions } from '../rank.js';
 import { getAgent, hasAgent, listAgents } from '../agents/registry.js';
-import { AcpClientHost, HostClosedError, TurnInFlightError, capToolOutput, normalizeClaudeModel, type ChunkMeta, type CompactionEvent, type ElicitationOutcome, type PeerMessage, type TurnUsage } from './client-host.js';
+import { AcpClientHost, HostClosedError, TurnInFlightError, capToolOutput, normalizeClaudeModel, type ChunkMeta, type CompactionEvent, type ElicitationOutcome, type TurnUsage } from './client-host.js';
+import { watchPeerMessages, type PeerMessage } from './peer-inbox.js';
 import { describeElicitationAnswer, validateElicitationContent } from './elicitation.js';
 import { HANDOFF_SUMMARY_PROMPT, autoCompactDecision, capSummary, contextWindowFor, latestCompaction, readAutoCompactDefault, writeAutoCompactDefault } from '../compaction.js';
 import { ptyManager } from '../pty-manager.js';
@@ -792,6 +793,14 @@ export class SessionManager extends EventEmitter {
       }
       if (host.isShutdown) throw new Error('Agent was stopped while starting');
       this.activeHosts.set(session.id, host);
+      // Claude's adapter leaves messages from other sessions out of its feed; its transcript has them
+      if (session.agentId === 'claude' && host.sessionId) {
+        watchPeerMessages(
+          claudeSessionTranscript(session.cwd, host.sessionId),
+          () => !host.isShutdown && this.activeHosts.get(session.id) === host,
+          (peer) => host.emit('peerMessage', peer)
+        );
+      }
       const current = store.get(session.id);
       if (current) {
         if (host.mcpInfo) current.mcp = host.mcpInfo;

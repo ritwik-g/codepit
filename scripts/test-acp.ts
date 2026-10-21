@@ -5,7 +5,6 @@ import { execSync } from 'node:child_process';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import type { IncomingMessage } from 'node:http';
-import type { TurnSegment } from '../server/types.js';
 
 // Isolate test storage from the user's real ~/.codepit directory BEFORE any imports
 const testAppDir = path.join(os.tmpdir(), `codepit-test-app-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
@@ -19,6 +18,7 @@ const { searchSessions } = await import('../server/search.js');
 const { store } = await import('../server/store.js');
 const { getAppDir, getSessionsDir } = await import('../server/paths.js');
 const { TurnInFlightError } = await import('../server/acp/client-host.js');
+const { peerMessageOf, watchPeerMessages } = await import('../server/acp/peer-inbox.js');
 const { checkAccess, getRemoteAddress } = await import('../server/security.js');
 const { apiRouter, parseAnnotations } = await import('../server/api.js');
 const { promptCacheExpiry } = await import('../server/acp/session-mgr.js');
@@ -926,20 +926,40 @@ async function runTests() {
     if (sessionManager.getSession(named.id)!.title !== 'My own name') throw new Error('An agent title must not replace a name the user gave');
     console.log('   ✅ Agent titles apply until the user renames; finished turns unseen until opened');
 
-    // 10g2. A message from another Claude session is shown where the agent received it
+    // 10g2. Messages from other Claude sessions: Claude's adapter drops them from its feed, so they
+    // are read from the session transcript, in the shape Claude Code writes them there
+    const inbox = path.join(testDir, 'peer-transcript.jsonl');
+    fs.writeFileSync(inbox, JSON.stringify({ type: 'user', origin: { kind: 'peer', msg_id: 'old', name: 'x', body: 'Received before this run' }, message: { role: 'user', content: 'x' } }) + '\n');
+    const received: Array<{ from: string; fromName?: string; text: string }> = [];
+    let inboxOpen = true;
+    watchPeerMessages(inbox, () => inboxOpen, (peer) => received.push(peer));
+    const wrapped = 'Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/cc-socks/1.sock" from-name="Fix &amp; ship" from-mode="prompting">\nTests pass on **main**.\n</cross-session-message>';
+    const peerLine = JSON.stringify({ type: 'user', isMeta: true, uuid: 'u1', origin: { kind: 'peer', from: 'uds:/tmp/cc-socks/1.sock', msg_id: 'm1', name: 'Fix & ship', body: 'Tests pass on **main**.' }, message: { role: 'user', content: wrapped } });
+    // A line can land in two writes; a plain user prompt and a repeat of the same message are not new ones
+    fs.appendFileSync(inbox, JSON.stringify({ type: 'user', message: { role: 'user', content: 'a prompt' } }) + '\n' + peerLine.slice(0, 40));
+    await new Promise((r) => setTimeout(r, 700));
+    fs.appendFileSync(inbox, peerLine.slice(40) + '\n' + peerLine + '\n');
+    await new Promise((r) => setTimeout(r, 700));
+    inboxOpen = false;
+    if (received.length !== 1) throw new Error(`Expected one new peer message, got ${JSON.stringify(received)}`);
+    if (received[0].from !== 'uds:/tmp/cc-socks/1.sock' || received[0].fromName !== 'Fix & ship' || received[0].text !== 'Tests pass on **main**.') {
+      throw new Error(`Peer message read wrong: ${JSON.stringify(received[0])}`);
+    }
+    const noOrigin = peerMessageOf({ type: 'user', origin: { kind: 'peer' }, message: { content: wrapped } });
+    if (noOrigin?.fromName !== 'Fix & ship' || noOrigin.text !== 'Tests pass on **main**.') throw new Error(`Wrapped text fallback failed: ${JSON.stringify(noOrigin)}`);
+
+    // ...and filed in the reply the agent is writing
     const peered = await sessionManager.createSession({ agentId: 'mock', cwd: testDir });
     await waitForIdle(peered.id);
-    await sessionManager.sendPrompt(peered.id, 'Expect a peer message');
+    await sessionManager.sendPrompt(peered.id, 'Hello');
     await waitForIdle(peered.id);
+    (sessionManager as any).activeHosts.get(peered.id).emit('peerMessage', received[0]);
     const peerTurn = sessionManager.getSession(peered.id)!.turns.at(-1)!;
-    const kinds = (peerTurn.segments || []).map((seg) => seg.kind).join(',');
-    if (kinds !== 'text,peer,text') throw new Error(`Peer message not filed between the replies: ${kinds}`);
-    const peerSeg = peerTurn.segments![1] as Extract<TurnSegment, { kind: 'peer' }>;
-    if (peerSeg.from !== 'codepit-a1' || peerSeg.fromName !== 'Fix & ship' || peerSeg.text !== 'Tests pass on **main**.') {
-      throw new Error(`Peer message parsed wrong: ${JSON.stringify(peerSeg)}`);
+    const peerSeg = peerTurn.segments?.at(-1);
+    if (peerTurn.role !== 'agent' || peerSeg?.kind !== 'peer' || peerSeg.fromName !== 'Fix & ship') {
+      throw new Error(`Peer message not filed in the agent turn: ${JSON.stringify(peerTurn.segments)}`);
     }
-    if (peerTurn.content?.includes('cross-session')) throw new Error('A peer message must not leak into the agent reply');
-    console.log('   ✅ Messages from other sessions are recorded in the turn that received them');
+    console.log('   ✅ Messages from other sessions are read from the transcript and filed in the agent turn');
 
     // 10h. Claude's prompt cache: 1 hour on a subscription, 5 minutes on an API key; unknown for others
     const ended = 1_000_000;

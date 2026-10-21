@@ -130,19 +130,6 @@ class MockAcpAgent {
       return { stopReason: 'end_turn' as const };
     }
 
-    // "peer message" receives a message from another Claude session mid-turn, as Claude's adapter
-    // forwards it: user-role text wrapped in <cross-session-message>, then answers it
-    if (/\bpeer message\b/.test(lower)) {
-      const send = (update: Record<string, unknown>) => cx.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update });
-      await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Waiting on the other session.' } });
-      await send({
-        sessionUpdate: 'user_message_chunk',
-        content: { type: 'text', text: '<cross-session-message from="codepit-a1" from-name="Fix &amp; ship">\nTests pass on **main**.\n</cross-session-message>' },
-      });
-      await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Thanks, carrying on.' } });
-      return { stopReason: 'end_turn' as const };
-    }
-
     // "rfd subagent" delegates the way ACP's subagents RFD says: a subagent_update upsert naming the
     // child session, its work on that session, then an idle state with usage. The child keeps its id
     // across prompts, so asking again delegates to the same subagent.
