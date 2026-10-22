@@ -257,7 +257,7 @@ export const SessionHeader: React.FC<{
           >
             Stop agent
           </Button>
-        ) : restorable ? (
+        ) : session.pendingStart ? null : restorable ? (
           <Button
             variant="ghost"
             icon="play"
@@ -350,7 +350,7 @@ export const SessionTabsBar: React.FC<{
           },
           { id: 'terminal', label: 'Terminal', count: shellCommandCount },
           { id: 'usage', label: 'Usage' },
-          { id: 'tags', label: 'Tags', count: tagCount || undefined },
+          { id: 'tags', label: 'Related', count: tagCount || undefined },
         ]}
       />
       <button

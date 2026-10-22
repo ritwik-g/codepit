@@ -9,6 +9,7 @@ import { ptyManager } from '../pty-manager.js';
 import { appEnv } from '../env.js';
 import type { AgentCommand, AgentDescriptor, AgentOptions, AsyncTaskUpdate, ElicitationAction, ElicitationValue, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionMcpInfo, ToolCallRecord, TokenUsage } from '../types.js';
 import { appliesTo, listMcpServers, resolveSessionMcpServers } from '../mcp/config.js';
+import { CODEPIT_MCP_NAME, codepitMcpEntry } from '../mcp/codepit/access.js';
 import { syncAgyMcpQuietly } from '../mcp/agy-sync.js';
 import { effortToSend, launchModelValue, parseAgentOptions, resolveModelValue } from './agent-options.js';
 import { parseElicitationFields } from './elicitation.js';
@@ -915,7 +916,16 @@ export class AcpClientHost extends EventEmitter {
       const skipped = configured.filter((s) => s.enabled && appliesTo(s, this.agent.id)).map((s) => ({ name: s.name, reason }));
       return { servers: [], info: { attached: [], skipped } };
     }
-    return resolveSessionMcpServers(this.agent.id, this.cwd, caps, configured);
+    const resolved = resolveSessionMcpServers(this.agent.id, this.cwd, caps, configured);
+    // CodePit's own server, with this session's token, when it is turned on for this agent
+    const own = codepitMcpEntry(this.sessionRecordId, this.agent.id, caps, resolved.servers.map((m) => m.name));
+    if (own && 'server' in own) {
+      resolved.servers.push(own.server);
+      resolved.info.attached.push(CODEPIT_MCP_NAME);
+    } else if (own) {
+      resolved.info.skipped.push({ name: CODEPIT_MCP_NAME, reason: own.skipped });
+    }
+    return resolved;
   }
 
   async sendPrompt(text: string, attachments?: FileAttachment[]): Promise<{ stopReason: string }> {

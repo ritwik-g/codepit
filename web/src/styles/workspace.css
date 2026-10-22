@@ -2812,3 +2812,23 @@ button.ws-sheet-row:active:not(:disabled) {
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
+
+/* A session another session asked for, waiting to be started */
+.ws-pending-prompt {
+  margin: var(--space-2) 0 0;
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.ws-pending-prompt.is-preview {
+  max-height: 160px;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

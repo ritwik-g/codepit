@@ -28,11 +28,15 @@ import { getUploadsDir } from './paths.js';
 import { devices } from './devices.js';
 import { isHostClient } from './security.js';
 import { mcpRouter } from './mcp/routes.js';
+import { codepitMcpRouter } from './mcp/codepit/routes.js';
 import { agentBinary, agentVersionInfo, updateAgent } from './agent-versions.js';
 import { advertisedOptions, effortChoicesFor, effortError, isEffortValue, isFavoriteList, markNewModels, readFavoriteModels, writeFavoriteModels } from './acp/agent-options.js';
 import { refreshCodexRateLimitsAsync } from './codex-limits.js';
 import { readWorkflowAgent, readWorkflowRun } from './acp/workflow-run.js';
 import type { AgentTask, UserAnnotations } from './types.js';
+import { MAX_TAGS, normalizeTags } from './tags.js';
+
+export { normalizeTag } from './tags.js';
 
 export const apiRouter = Router();
 
@@ -44,6 +48,9 @@ apiRouter.use('/attachments', express.static(getUploadsDir()));
 
 // App-level MCP servers, presets and the agents' own plugins and skills
 apiRouter.use('/mcp', mcpRouter);
+
+// CodePit's own MCP server: settings and audit log
+apiRouter.use('/codepit-mcp', codepitMcpRouter);
 
 // 1. List registered agents
 apiRouter.get('/agents', (req: Request, res: Response) => {
@@ -199,6 +206,26 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
   } catch (err: any) {
     res.status(500).json({ error: `Failed to start agent: ${err?.message || 'unknown error'}` });
   }
+});
+
+// 3b. A session another session asked for: start it (optionally with an edited prompt) or discard it
+apiRouter.post('/sessions/:id/pending-start', (req: Request, res: Response) => {
+  const session = sessionManager.getSession(sid(req));
+  if (!session?.pendingStart) {
+    res.status(404).json({ error: 'No session waiting to be started' });
+    return;
+  }
+  const { action, prompt } = req.body ?? {};
+  if (action === 'discard') {
+    sessionManager.deleteSession(session.id);
+    res.json({ ok: true });
+    return;
+  }
+  if (action !== 'start' || (prompt !== undefined && typeof prompt !== 'string')) {
+    res.status(400).json({ error: 'action must be start or discard, and prompt text' });
+    return;
+  }
+  res.json({ session: sessionManager.startPendingSession(session.id, prompt) });
 });
 
 // 4. Get full session detail
@@ -682,9 +709,6 @@ apiRouter.post('/sessions/:id/seen', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-const MAX_TAGS = 12;
-const MAX_TAG_LENGTH = 32;
-
 /** Keeps only the known annotation fields, each of the right type; a string is the reason it was refused. */
 export function parseAnnotations(body: unknown): Partial<UserAnnotations> | string {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Expected an object';
@@ -710,26 +734,11 @@ export function parseAnnotations(body: unknown): Partial<UserAnnotations> | stri
   }
   if ('tags' in b) {
     if (!Array.isArray(b.tags) || b.tags.some((t) => typeof t !== 'string')) return 'tags must be a list of text';
-    const tags: string[] = [];
-    for (const raw of b.tags as string[]) {
-      const tag = normalizeTag(raw);
-      if (tag && !tags.includes(tag)) tags.push(tag);
-    }
+    const tags = normalizeTags(b.tags as string[]);
     if (tags.length > MAX_TAGS) return `At most ${MAX_TAGS} tags`;
     out.tags = tags;
   }
   return out;
-}
-
-/** "#Infra Work " -> "infra-work": lower case, no leading #, spaces become dashes. */
-export function normalizeTag(raw: string): string {
-  return raw
-    .trim()
-    .replace(/^#+/, '')
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^\p{L}\p{N}_./-]/gu, '')
-    .slice(0, MAX_TAG_LENGTH);
 }
 
 // 10. Rename session title

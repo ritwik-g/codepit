@@ -2287,3 +2287,71 @@ button.tag-chip-label {
     padding: var(--space-4);
   }
 }
+
+/* Group by status, tag or family */
+.sb-filters {
+  flex-wrap: wrap;
+}
+
+.sb-filters > .ui-segmented {
+  flex-basis: 100%;
+}
+
+.sb-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tags and session titles keep their own case */
+.sb-list:not([data-group-by='status']) .sb-group-name {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--text-sm);
+}
+
+.sb-group-vitals {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-group-vitals + .sb-group-unseen {
+  margin-left: 0;
+}
+
+.sb-group-vital {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* A session another one started sits under it, with a guide line */
+.sb-row[data-depth] {
+  margin-left: calc(var(--sb-depth, 1) * 14px);
+}
+
+.sb-row[data-depth]::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--border-strong, var(--border));
+}
+
+.tags-related-row.is-current {
+  background: var(--surface-2);
+  cursor: default;
+}
+
+.tags-related-you {
+  color: var(--text-3);
+}

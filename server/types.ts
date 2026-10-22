@@ -480,6 +480,12 @@ export interface AcpSession {
   /** A fork's handover from the session it came from, sent with the first prompt. */
   pendingContext?: PendingContext;
   failoverFromId?: string; // Tracks previous session if failed over from another agent
+  /** The session that started this one through CodePit's MCP server. */
+  spawnedBy?: SpawnedBy;
+  /** Links to other sessions, set through CodePit's MCP server. */
+  links?: SessionLink[];
+  /** Started by another session and waiting for the user to let it run. */
+  pendingStart?: PendingStart;
   activeTerminalId?: string;
   promptSuggestion?: string;
   rateLimits?: SessionRateLimits;
@@ -515,6 +521,30 @@ export interface AcpSession {
   limitResumeSentAt?: number;
   /** The last turn stopped on a usage limit; cleared when a message is sent. */
   limitHit?: LimitHit | null;
+}
+
+export interface SpawnedBy {
+  sessionId: string;
+  at: number;
+  /** 1 for a session the user's own session started, 2 for one that session started, and so on. */
+  depth: number;
+}
+
+export type SessionLinkKind = 'related' | 'follow-up' | 'blocked-by';
+
+export interface SessionLink {
+  sessionId: string;
+  kind: SessionLinkKind;
+  at: number;
+  /** The session whose agent made the link. */
+  by?: string;
+}
+
+/** A session another session asked for, held until the user starts or discards it. */
+export interface PendingStart {
+  prompt: string;
+  requestedBy: string;
+  requestedAt: number;
 }
 
 /** An agent process this run of CodePit started and has not stopped: on disk while it runs, so a crash leaves it behind. */
@@ -634,6 +664,11 @@ export interface SessionSummary {
   contextWindow?: number;
   lastTurnEndedAt?: number;
   seenAt?: number;
+  spawnedBy?: SpawnedBy;
+  links?: SessionLink[];
+  pendingStart?: PendingStart;
+  /** The agent's own session id, and for Claude its current session name (what SendMessage takes). */
+  agentSessionId?: string;
   /**
    * When the agent's prompt cache is expected to lapse, for agents whose cache lifetime is
    * known (Claude: 1 hour on a subscription, 5 minutes on an API key). An estimate: no

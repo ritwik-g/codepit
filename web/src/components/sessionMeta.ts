@@ -27,6 +27,7 @@ const STATE_TONE: Record<string, Tone> = {
 
 /** The label, tone and pulse for a session's state dot. */
 export function sessionStateView(session: AcpSession): { label: string; tone: Tone; pulse: boolean } {
+  if (session.pendingStart) return { label: 'Waiting to start', tone: 'warn', pulse: false };
   if (session.isAgentRunning === false) return { label: 'Agent stopped', tone: 'neutral', pulse: false };
   if (session.state === 'needs_you' && hasRunningBackground(session)) return { label: 'Working in background', tone: 'accent', pulse: true };
   // Blocked on a question rather than an approval

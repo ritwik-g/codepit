@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { Button, Icon, Input, StatusDot } from '../ui';
-import type { SessionSummary } from '../types';
-import { folderName, relativeTime, sessionStatus } from './Sidebar';
+import type { SessionLinkKind, SessionSummary } from '../types';
+import { familyRoot, familyTree, folderName, relativeTime, sessionStatus } from './Sidebar';
 
-// Dialogs for organising a session: how long to snooze it, and its tags.
+// Dialogs for organising a session: how long to snooze it, its tags, and the sessions related to it.
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -201,6 +201,9 @@ export const TagsPanel: React.FC<{
           )}
         </section>
 
+        <FamilySection sessionId={sessionId} sessions={sessions} onSelectSession={onSelectSession} />
+        <LinksSection sessionId={sessionId} sessions={sessions} onSelectSession={onSelectSession} />
+
         {tags.map((t) => {
           const others = sessions.filter((s) => s.id !== sessionId && (s.user.tags || []).includes(t));
           if (others.length === 0) return null;
@@ -228,3 +231,129 @@ export const TagsPanel: React.FC<{
     </div>
   );
 };
+
+const RelatedRow: React.FC<{
+  session: SessionSummary;
+  current?: boolean;
+  depth?: number;
+  note?: string;
+  onSelect?: () => void;
+}> = ({ session, current, depth, note, onSelect }) => {
+  const status = sessionStatus(session);
+  return (
+    <button
+      type="button"
+      className={`tags-related-row ${current ? 'is-current' : ''}`}
+      onClick={onSelect}
+      disabled={current}
+      aria-current={current ? 'true' : undefined}
+      style={depth ? { paddingLeft: `calc(var(--space-3) + ${Math.min(depth, 6) * 16}px)` } : undefined}
+    >
+      <StatusDot tone={status.tone} pulse={status.pulse} label={status.label} />
+      <span className="tags-related-title">
+        {session.title}
+        {current && <span className="tags-related-you"> · this session</span>}
+      </span>
+      <span className="tags-related-meta">
+        {note ? `${note} · ` : ''}
+        {session.agentName} · {folderName(session.cwd)} · {relativeTime(session.updatedAt)}
+      </span>
+    </button>
+  );
+};
+
+/** The sessions started from the same root as this one, as a tree. */
+const FamilySection: React.FC<{ sessionId: string; sessions: SessionSummary[]; onSelectSession?: (id: string) => void }> = ({
+  sessionId,
+  sessions,
+  onSelectSession,
+}) => {
+  const { order, depth } = useMemo(() => {
+    const byId = new Map(sessions.map((s) => [s.id, s]));
+    const root = familyRoot(sessionId, byId);
+    const members = sessions.filter((s) => familyRoot(s.id, byId) === root);
+    return familyTree(root, members);
+  }, [sessionId, sessions]);
+  const self = sessions.find((s) => s.id === sessionId);
+  if (order.length <= 1) {
+    // A parent that was deleted still leaves a trace
+    if (!self?.spawnedBy) return null;
+    return (
+      <section className="tags-section">
+        <div className="tags-eyebrow">Started by</div>
+        <p className="tags-empty">A session that has since been deleted.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="tags-section">
+      <div className="tags-eyebrow">Started together</div>
+      <div className="tags-related">
+        {order.map((s) => (
+          <RelatedRow
+            key={s.id}
+            session={s}
+            current={s.id === sessionId}
+            depth={depth.get(s.id)}
+            note={s.pendingStart ? 'waiting to start' : undefined}
+            onSelect={() => onSelectSession?.(s.id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+};
+
+const LINK_LABEL: Record<SessionLinkKind, { out: string; in: string }> = {
+  related: { out: 'related', in: 'related' },
+  'follow-up': { out: 'follows up on', in: 'followed up by' },
+  'blocked-by': { out: 'blocked by', in: 'blocks' },
+};
+
+/** Links agents recorded between this session and others, both ways. */
+const LinksSection: React.FC<{ sessionId: string; sessions: SessionSummary[]; onSelectSession?: (id: string) => void }> = ({
+  sessionId,
+  sessions,
+  onSelectSession,
+}) => {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const self = byId.get(sessionId);
+  const rows: Array<{ session: SessionSummary; note: string }> = [];
+  for (const l of self?.links ?? []) {
+    const other = byId.get(l.sessionId);
+    if (other) rows.push({ session: other, note: LINK_LABEL[l.kind].out });
+  }
+  for (const s of sessions) {
+    if (s.id === sessionId) continue;
+    for (const l of s.links ?? []) if (l.sessionId === sessionId) rows.push({ session: s, note: LINK_LABEL[l.kind].in });
+  }
+  if (rows.length === 0) return null;
+  return (
+    <section className="tags-section">
+      <div className="tags-eyebrow">Linked</div>
+      <div className="tags-related">
+        {rows.map((r, i) => (
+          <RelatedRow key={`${r.session.id}-${i}`} session={r.session} note={r.note} onSelect={() => onSelectSession?.(r.session.id)} />
+        ))}
+      </div>
+    </section>
+  );
+};
+
+/** Other sessions related to this one: started together, linked, or sharing a tag. */
+export function relatedSessionCount(sessionId: string, sessions: SessionSummary[]): number {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const self = byId.get(sessionId);
+  if (!self) return 0;
+  const root = familyRoot(sessionId, byId);
+  const tags = new Set(self.user.tags ?? []);
+  const linked = new Set((self.links ?? []).map((l) => l.sessionId));
+  return sessions.filter(
+    (s) =>
+      s.id !== sessionId &&
+      (familyRoot(s.id, byId) === root ||
+        linked.has(s.id) ||
+        (s.links ?? []).some((l) => l.sessionId === sessionId) ||
+        (s.user.tags ?? []).some((t) => tags.has(t)))
+  ).length;
+}

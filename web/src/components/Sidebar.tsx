@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { LimitHit, SessionSummary } from '../types';
 import { VendorIcon } from './VendorLogos';
-import { Badge, Button, Icon, IconButton, Input, Kbd, Spinner, StatusDot, type Tone } from '../ui';
+import { Badge, Button, Icon, IconButton, Input, Kbd, Segmented, Spinner, StatusDot, type Tone } from '../ui';
 import { ThemeMenu } from './ThemeMenu';
 import { BrandMark } from './BrandMark';
 import { formatTokens, sessionPricing } from '../pricing';
@@ -24,8 +24,10 @@ export interface SessionStatus {
 /** Label and tone for a session's state, per the table in DESIGN.md. */
 export function sessionStatus(
   s: Pick<SessionSummary, 'state' | 'isAgentRunning' | 'compacting' | 'workingInBackground'> &
-    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume' | 'limitHit'>>
+    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume' | 'limitHit' | 'pendingStart'>>
 ): SessionStatus {
+  // Another session asked for it; it waits for the user to start it
+  if (s.pendingStart) return { label: 'Waiting to start', tone: 'warn', pulse: false };
   if (s.compacting && s.state !== 'blocked') return { label: 'Compacting', tone: 'accent', pulse: true };
   // Waiting to send a message later: after the usage limit resets, or when a pause ends
   const resume = s.scheduledResume;
@@ -66,6 +68,7 @@ export function sessionStatus(
 }
 
 export const needsAttention = (s: SessionSummary) =>
+  Boolean(s.pendingStart) ||
   s.state === 'blocked' || (s.state === 'needs_you' && !s.workingInBackground && !s.scheduledResume?.armed) || s.state === 'crashed';
 
 /** "Weekly limit", "5-hour limit": which usage limit a session stopped on. */
@@ -239,6 +242,102 @@ interface SidebarProps {
 }
 
 const COLLAPSED_KEY = 'codepit_sidebar_collapsed';
+const GROUP_BY_KEY = 'codepit_sidebar_group_by';
+
+type GroupBy = 'status' | 'tag' | 'family';
+
+function loadGroupBy(): GroupBy {
+  try {
+    const v = localStorage.getItem(GROUP_BY_KEY);
+    return v === 'tag' || v === 'family' ? v : 'status';
+  } catch {
+    return 'status';
+  }
+}
+
+interface SidebarGroup {
+  id: string;
+  label: string;
+  items: SessionSummary[];
+  /** How far each row is indented: its depth under the group's first session. */
+  depth?: Map<string, number>;
+}
+
+/** The session at the top of a session's chain of parents, among the sessions shown. */
+export function familyRoot(id: string, byId: Map<string, SessionSummary>): string {
+  const seen = new Set<string>();
+  let current = id;
+  while (!seen.has(current)) {
+    seen.add(current);
+    const parent = byId.get(current)?.spawnedBy?.sessionId;
+    if (!parent || !byId.has(parent)) break;
+    current = parent;
+  }
+  return current;
+}
+
+/** A family's sessions in tree order (each followed by the sessions it started), with depths. */
+export function familyTree(rootId: string, members: SessionSummary[]): { order: SessionSummary[]; depth: Map<string, number> } {
+  const children = new Map<string, SessionSummary[]>();
+  for (const s of members) {
+    const parent = s.spawnedBy?.sessionId;
+    if (parent && s.id !== rootId) children.set(parent, [...(children.get(parent) ?? []), s]);
+  }
+  const order: SessionSummary[] = [];
+  const depth = new Map<string, number>();
+  const byId = new Map(members.map((s) => [s.id, s]));
+  const walk = (id: string, d: number) => {
+    const s = byId.get(id);
+    if (!s || depth.has(id)) return;
+    order.push(s);
+    depth.set(id, d);
+    for (const c of (children.get(id) ?? []).sort((a, b) => a.startedAt - b.startedAt)) walk(c.id, d + 1);
+  };
+  walk(rootId, 0);
+  return { order, depth };
+}
+
+function groupSessions(mode: GroupBy, shown: SessionSummary[], all: SessionSummary[]): SidebarGroup[] {
+  if (mode === 'tag') {
+    const byTag = new Map<string, SessionSummary[]>();
+    const untagged: SessionSummary[] = [];
+    for (const s of shown) {
+      const tags = s.user.tags ?? [];
+      if (tags.length === 0) untagged.push(s);
+      for (const t of tags) byTag.set(t, [...(byTag.get(t) ?? []), s]);
+    }
+    const groups: SidebarGroup[] = [...byTag.entries()]
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+      .map(([t, items]) => ({ id: `tag:${t}`, label: `#${t}`, items }));
+    if (untagged.length > 0) groups.push({ id: 'tag:', label: 'No tags', items: untagged });
+    return groups;
+  }
+  if (mode === 'family') {
+    // Roots come from every session, so a filtered-out parent still holds its family together
+    const byId = new Map(all.map((s) => [s.id, s]));
+    const families = new Map<string, SessionSummary[]>();
+    for (const s of shown) {
+      const root = familyRoot(s.id, byId);
+      families.set(root, [...(families.get(root) ?? []), s]);
+    }
+    const groups: SidebarGroup[] = [];
+    const alone: SessionSummary[] = [];
+    for (const [root, members] of families) {
+      if (members.length === 1 && members[0].id === root && !all.some((x) => x.spawnedBy?.sessionId === root)) {
+        alone.push(members[0]);
+        continue;
+      }
+      const { order, depth } = familyTree(root, members);
+      // Members whose parent is filtered out still show, at the top level
+      const rest = members.filter((m) => !depth.has(m.id));
+      for (const m of rest) depth.set(m.id, 1);
+      groups.push({ id: `family:${root}`, label: byId.get(root)?.title ?? 'Session', items: [...order, ...rest], depth });
+    }
+    if (alone.length > 0) groups.push({ id: 'family:', label: 'On their own', items: alone });
+    return groups;
+  }
+  return GROUPS.map((g) => ({ id: g.id, label: g.label, items: shown.filter(g.test) })).filter((g) => g.items.length > 0);
+}
 
 function loadCollapsed(): Set<string> {
   try {
@@ -286,6 +385,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [filterText, setFilterText] = useState('');
   const filterRef = useRef<HTMLInputElement>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const [groupBy, setGroupByState] = useState<GroupBy>(loadGroupBy);
+  const setGroupBy = (mode: GroupBy) => {
+    setGroupByState(mode);
+    try {
+      localStorage.setItem(GROUP_BY_KEY, mode);
+    } catch {
+      // remembered for this visit only
+    }
+  };
   const toggleGroup = (id: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -313,7 +421,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
   const activeTab = tabs.find((t) => t.id === filterTab)!;
   const filteredSessions = textFiltered.filter(activeTab.test);
-  const groups = GROUPS.map((g) => ({ ...g, items: filteredSessions.filter(g.test) })).filter((g) => g.items.length > 0);
+  const groups = groupSessions(groupBy, filteredSessions, sessions);
   const isHome = selectedId === null;
 
   return (
@@ -404,6 +512,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })}
         </div>
+        <Segmented<GroupBy>
+          label="Group sessions by"
+          size="sm"
+          block
+          value={groupBy}
+          onChange={setGroupBy}
+          options={[
+            { value: 'status', label: 'Status', title: 'Group by what each session needs' },
+            { value: 'tag', label: 'Tag', title: 'Group by tag; a session with several tags shows under each' },
+            { value: 'family', label: 'Family', title: 'Group sessions with the sessions they started' },
+          ]}
+        />
       </div>
 
       {filterOpen && (
@@ -437,7 +557,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Every session, not the filtered ones: the count does not depend on the tab or the filter */}
       <RestoreAllBar sessions={sessions} />
 
-      <div className="sb-list">
+      <div className="sb-list" data-group-by={groupBy}>
         {groups.map((g) => {
           // A text filter shows every match, folded or not
           const isCollapsed = collapsed.has(g.id) && !filterText;
@@ -452,8 +572,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title={isCollapsed ? `Show ${g.label.toLowerCase()} sessions` : `Hide ${g.label.toLowerCase()} sessions`}
               >
                 <Icon name="chevronDown" size={11} className="sb-group-chevron" />
-                <span>{g.label}</span>
+                <span className="sb-group-name">{g.label}</span>
                 <span className="sb-group-count">{g.items.length}</span>
+                {groupBy !== 'status' && <GroupVitals items={g.items} />}
                 {unseen > 0 && (
                   <span className="sb-group-unseen" title={`${unseen} finished since you last looked`}>
                     {unseen} new
@@ -462,7 +583,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
               {!isCollapsed &&
                 g.items.map((s) => (
-                  <SessionRow key={s.id} session={s} now={now} isSelected={s.id === selectedId} onSelect={() => onSelectSession(s.id)} />
+                  <SessionRow
+                    key={s.id}
+                    session={s}
+                    now={now}
+                    isSelected={s.id === selectedId}
+                    onSelect={() => onSelectSession(s.id)}
+                    depth={g.depth?.get(s.id)}
+                  />
                 ))}
             </section>
           );
@@ -520,12 +648,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
   );
 };
 
+/** How many of a group's sessions need the user and how many are working, as two small counts. */
+const GroupVitals: React.FC<{ items: SessionSummary[] }> = ({ items }) => {
+  const needs = items.filter(needsAttention).length;
+  const working = items.filter(isWorking).length;
+  return (
+    <span className="sb-group-vitals">
+      {needs > 0 && (
+        <span className="sb-group-vital tone-danger" title={`${needs} need${needs === 1 ? 's' : ''} you`}>
+          <StatusDot tone="danger" label="Needs you" /> {needs}
+        </span>
+      )}
+      {working > 0 && (
+        <span className="sb-group-vital" title={`${working} working`}>
+          <StatusDot tone="accent" pulse label="Working" /> {working}
+        </span>
+      )}
+    </span>
+  );
+};
+
 const SessionRow: React.FC<{
   session: SessionSummary;
   now: number;
   isSelected: boolean;
   onSelect: () => void;
-}> = ({ session, now, isSelected, onSelect }) => {
+  /** Depth in a family tree; nested rows are indented. */
+  depth?: number;
+}> = ({ session, now, isSelected, onSelect, depth }) => {
   const status = sessionStatus(session);
   const preview = sessionPreview(session);
   const vitals = sessionVitals(session, now);
@@ -548,6 +698,8 @@ const SessionRow: React.FC<{
       aria-current={isSelected ? 'true' : undefined}
       data-session-id={session.id}
       title={session.rankSummary || undefined}
+      style={depth ? ({ '--sb-depth': Math.min(depth, 4) } as React.CSSProperties) : undefined}
+      data-depth={depth || undefined}
     >
       <div className="sb-row-top">
         <span className={`sb-row-dot ${unseen ? 'is-unseen' : ''}`} title={unseen ? `${status.label} · finished since you last looked` : status.label}>

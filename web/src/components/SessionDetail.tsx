@@ -22,7 +22,8 @@ import { nextPriority, runningSubagents } from './sessionMeta';
 import { AgentsPanel, agentTaskCounts } from './AgentsView';
 import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
-import { SnoozeModal, TagsPanel } from './SessionOrganize';
+import { SnoozeModal, TagsPanel, relatedSessionCount } from './SessionOrganize';
+import { PendingStartCard } from './PendingStartCard';
 import { RestoreSessionBanner, isRestorable } from './RestorePrompt';
 import { ResumeAtModal, ResumeBanner } from './ResumeLater';
 
@@ -391,7 +392,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
         estimatedCost={estimatedCost}
         agentTasks={agentTaskCounts(session)}
         agentSessionCount={session.agentSessions?.length}
-        tagCount={session.user.tags?.length}
+        tagCount={relatedSessionCount(session.id, allSessions) || session.user.tags?.length}
       />
 
       <AgentTaskNavContext.Provider value={openAgentTasks}>
@@ -457,7 +458,16 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
         onOpenSwitchModal={onOpenSwitchModal}
         above={
           // An approval and a form can both be waiting (e.g. from two subagents): the approval shows first
-          session.pendingPermission ? (
+          session.pendingStart ? (
+            <PendingStartCard
+              key={session.id}
+              session={session}
+              requestedBy={allSessions.find((s) => s.id === session.pendingStart!.requestedBy)}
+              onSelectSession={onSelectSession}
+              onStarted={onRefresh}
+              onDiscarded={() => onDeleted?.(session.id)}
+            />
+          ) : session.pendingPermission ? (
             <ApprovalBanner
               permission={session.pendingPermission}
               onResolve={handleResolvePermission}

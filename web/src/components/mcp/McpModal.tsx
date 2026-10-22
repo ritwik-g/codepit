@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../api';
+import type { SessionSummary } from '../../types';
 import type { AgentDescriptor, AgySyncEntry, AgySyncStatus, EcosystemReport, McpPreset, McpProbeResult, McpServer, McpServerInput } from '../../types';
 import { Badge, Button, EmptyState, Icon, Segmented, Spinner, Switch, Tabs, type IconName } from '../../ui';
 import { Modal } from '../Modal';
@@ -8,13 +9,15 @@ import { AgentFitBadges, McpServerForm, TRANSPORT_LABEL, agentFit } from './McpS
 import { McpCatalog } from './McpCatalog';
 import { McpEcosystems } from './McpEcosystems';
 import { MemoryGraphView } from './MemoryGraphView';
+import { CodepitServerPanel } from './CodepitServerPanel';
 import '../../styles/mcp.css';
 
-export type McpTab = 'installed' | 'add' | 'plugins';
+export type McpTab = 'installed' | 'add' | 'codepit' | 'plugins';
 
 const TAB_LABEL: Record<McpTab, string> = {
   installed: 'Installed',
   add: 'Add a server',
+  codepit: 'CodePit server',
   plugins: 'Agent plugins and skills',
 };
 
@@ -160,10 +163,13 @@ export const McpModal: React.FC<{
   /** Folder the Test button uses for ${workspace}: the open session's, if any. */
   workspace?: string;
   initialTab?: McpTab;
+  /** For the CodePit server's audit log: session titles, and opening one. */
+  sessions?: SessionSummary[];
+  onSelectSession?: (id: string) => void;
   onClose: () => void;
   /** Called whenever the saved server list changes, so the sidebar count stays right. */
   onServersChange: (servers: McpServer[]) => void;
-}> = ({ agents, workspace, initialTab = 'installed', onClose, onServersChange }) => {
+}> = ({ agents, workspace, initialTab = 'installed', sessions = [], onSelectSession, onClose, onServersChange }) => {
   const [tab, setTab] = useState<McpTab>(initialTab);
   const [addMode, setAddMode] = useState<'catalog' | 'custom'>('catalog');
   const [servers, setServers] = useState<McpServer[] | null>(null);
@@ -319,6 +325,7 @@ export const McpModal: React.FC<{
         items={[
           { id: 'installed', label: TAB_LABEL.installed, icon: 'plug', count: list.length },
           { id: 'add', label: TAB_LABEL.add, icon: 'plus' },
+          { id: 'codepit', label: TAB_LABEL.codepit, icon: 'layers' },
           { id: 'plugins', label: TAB_LABEL.plugins, icon: 'package' },
         ]}
       />
@@ -416,6 +423,8 @@ export const McpModal: React.FC<{
             )}
           </>
         )}
+
+        {tab === 'codepit' && <CodepitServerPanel agents={agents} sessions={sessions} onSelectSession={onSelectSession} />}
 
         {tab === 'plugins' && (
           <McpEcosystems ecosystems={ecosystems} error={ecoError} refreshing={ecoRefreshing} onRefresh={() => loadEcosystems(true)} />

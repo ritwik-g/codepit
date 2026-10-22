@@ -100,6 +100,15 @@ as they would in your terminal, using your existing logins.
   PostgreSQL.
 - **Antigravity too:** its servers go into `agy`'s own MCP settings, kept in step
   with the dialog (see [Supported agents](#supported-agents)).
+- **CodePit's own server, for handing work between sessions:** turned on in
+  MCP and plugins → CodePit server, it gives Claude and Codex sessions tools to
+  start a session with a prompt (folder, agent, model and tags default to the
+  caller's, any can be changed), list and find sessions by CodePit id, title,
+  agent session id or Claude session name, check on them, tag and link them,
+  and get their own memory-graph stamp. New sessions either wait for you to
+  start them or start at once, your choice. They record which session started
+  them, and the sidebar can group sessions by tag or by family. Every call is
+  in an audit log on the same tab.
 - **Read-only view of what each agent loads by itself:** Claude Code plugins
   and skills, Codex plugins and skills, Antigravity plugins and MCP servers.
 

@@ -37,7 +37,7 @@ export function isWorkingInBackground(s: Pick<AcpSession, 'agentTasks' | 'turns'
   return state === 'needs_you' && hasRunningBackground(s);
 }
 
-export function deriveSessionState(session: Pick<AcpSession, 'pendingPermission' | 'pendingElicitation' | 'turns' | 'git' | 'user' | 'state' | 'agentStopped'>): SessionState {
+export function deriveSessionState(session: Pick<AcpSession, 'pendingPermission' | 'pendingElicitation' | 'turns' | 'git' | 'user' | 'state' | 'agentStopped'> & Partial<Pick<AcpSession, 'pendingStart'>>): SessionState {
   // Check snooze first
   if (session.user?.snoozedUntil && session.user.snoozedUntil > Date.now()) {
     return 'snoozed';
@@ -46,6 +46,11 @@ export function deriveSessionState(session: Pick<AcpSession, 'pendingPermission'
   // If there is an active permission or question request waiting for user response
   if (session.pendingPermission || session.pendingElicitation) {
     return 'blocked';
+  }
+
+  // Another session asked for it and it waits for the user to start it
+  if (session.pendingStart) {
+    return 'needs_you';
   }
 
   // If session is actively working on a turn

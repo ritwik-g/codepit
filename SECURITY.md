@@ -36,6 +36,16 @@ within a week. There is no bounty.
   carries out the file reads, writes and terminal commands they ask for, so
   anything an agent could do in your terminal it can do here. Approvals and the
   approval mode are the control, as they are in each agent's own CLI.
+- CodePit's own MCP server (off until you turn it on in MCP and plugins →
+  CodePit server) answers at `/mcp` outside the app's gate, since agents carry
+  no app key. It accepts only requests from this machine's loopback address
+  with no `Origin` header (so not from a browser page), carrying the bearer
+  token of one CodePit session. Tokens are random, held in memory, revoked
+  when the session is deleted, and open nothing else. The token decides which
+  session a call is made as, never the call's arguments. A session can start
+  new sessions in any folder it names, with the same approval mode as its own,
+  within your depth and per-session limits. Every call, refused ones included,
+  is appended to `~/.codepit/logs/codepit-mcp.jsonl` (owner-only).
 - Credentials you enter (API keys, MCP secrets) are stored owner-only in
   `~/.codepit/` and masked in the API and the UI after saving.
 - CodePit itself sends no telemetry. The network traffic is the agents talking to

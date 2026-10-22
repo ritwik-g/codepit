@@ -20,6 +20,8 @@ import { logQueueEvent } from '../queue-log.js';
 import { decideLimitResume, limitNoticeInText, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit, type UsageLimitHit } from '../limit-resume.js';
 import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, subagentStopRequest, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
+import type { SpawnedBy } from '../types.js';
+import { revokeToken } from '../mcp/codepit/access.js';
 import type { AcpSession, ContextSentRecord, PendingContext, LimitHit, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
 /**
@@ -583,6 +585,10 @@ export class SessionManager extends EventEmitter {
       // null rather than absent, so the client's merge clears one that was sent or cancelled
       scheduledResume: s.scheduledResume ?? null,
       limitHit: s.state === 'working' ? null : (s.limitHit ?? limitHitInLastTurn(s)),
+      agentSessionId: s.agentSessionId,
+      spawnedBy: s.spawnedBy,
+      links: s.links,
+      pendingStart: s.pendingStart,
     }));
   }
 
@@ -687,6 +693,16 @@ export class SessionManager extends EventEmitter {
     initialPrompt?: string;
     /** An existing conversation owned by this agent to continue in this new CodePit session. */
     importAgentSessionId?: string;
+    /** Started by another session through CodePit's MCP server. */
+    spawnedBy?: SpawnedBy;
+    tags?: string[];
+    /** The approval mode to start in (an agentOptions.modes value). */
+    mode?: string;
+    /**
+     * Keep the agent stopped and hold this prompt until the user starts the session
+     * (startPendingSession) or discards it. Takes the place of initialPrompt.
+     */
+    holdPrompt?: { prompt: string; requestedBy: string };
   }): Promise<AcpSession> {
     if (!hasAgent(opts.agentId)) throw new Error(`Unknown agent: ${opts.agentId}`);
     const id = `acp-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
@@ -728,12 +744,15 @@ export class SessionManager extends EventEmitter {
         priority: null,
         pinned: false,
         snoozedUntil: null,
-        tags: [],
+        tags: opts.tags ?? [],
         cleanup: false,
       },
       pendingPermission: null,
       turns: [],
       failoverFromId: opts.failoverFromId,
+      ...(opts.mode ? { mode: opts.mode } : {}),
+      ...(opts.spawnedBy ? { spawnedBy: opts.spawnedBy } : {}),
+      ...(opts.holdPrompt ? { pendingStart: { ...opts.holdPrompt, requestedAt: Date.now() }, state: 'needs_you' as const, recap: 'Waiting for you to start it' } : {}),
       pendingContext: opts.pendingContext,
       // An imported conversation is deliberately only an agent resume, not a copy of its
       // transcript into CodePit. The source app remains the owner of that history.
@@ -746,6 +765,7 @@ export class SessionManager extends EventEmitter {
 
     store.save(session);
     this.emit('sessionsUpdated', this.listSessions());
+    if (session.pendingStart) return session;
 
     // Spin up host; a session whose agent never started is removed rather than left as a zombie
     try {
@@ -1287,6 +1307,8 @@ export class SessionManager extends EventEmitter {
     // A message sent now replaces one waiting to be sent later, and resumes a limited session
     session.scheduledResume = null;
     session.limitHit = null;
+    // Any message starts a session that was waiting to be started
+    delete session.pendingStart;
 
     const savedAttachments = saveAttachments(sessionId, attachments);
 
@@ -2035,6 +2057,31 @@ export class SessionManager extends EventEmitter {
     this.emit('sessionsUpdated', this.listSessions());
     this.emit('sessionStream', { sessionId, type: 'sessionStopped', session });
 
+    return session;
+  }
+
+  /**
+   * Start a session another session asked for: its agent starts with the held prompt,
+   * or with `prompt` when the user changed it first.
+   */
+  startPendingSession(sessionId: string, prompt?: string): AcpSession {
+    const session = store.get(sessionId);
+    if (!session) throw new Error(`Session ${sessionId} not found`);
+    if (!session.pendingStart) throw new Error('This session is not waiting to be started');
+    const text = prompt?.trim() || session.pendingStart.prompt;
+    this.sendPrompt(sessionId, text).catch((err) => {
+      console.error(`[session-mgr] Error starting ${sessionId}:`, err);
+    });
+    return session;
+  }
+
+  /** Change a session's relations (links, tags) and tell the clients. */
+  updateRelations(sessionId: string, change: (s: AcpSession) => void): AcpSession | null {
+    const session = store.get(sessionId);
+    if (!session) return null;
+    change(session);
+    store.save(session, { touch: false });
+    this.emit('sessionsUpdated', this.listSessions());
     return session;
   }
 
@@ -3081,6 +3128,7 @@ export class SessionManager extends EventEmitter {
 
   deleteSession(sessionId: string): boolean {
     this.dropHost(sessionId, 'Session deleted');
+    revokeToken(sessionId);
     ptyManager.release(`session-term-${sessionId}`);
     const res = store.delete(sessionId);
     if (res) {

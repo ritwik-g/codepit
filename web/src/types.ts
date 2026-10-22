@@ -388,6 +388,60 @@ export interface ParkedAgentResume {
   lastSeenTurnId?: string;
 }
 
+/** The session that started this one through CodePit's MCP server. */
+export interface SpawnedBy {
+  sessionId: string;
+  at: number;
+  depth: number;
+}
+
+export type SessionLinkKind = 'related' | 'follow-up' | 'blocked-by';
+
+export interface SessionLink {
+  sessionId: string;
+  kind: SessionLinkKind;
+  at: number;
+  by?: string;
+}
+
+/** A session another session asked for, held until the user starts or discards it. */
+export interface PendingStart {
+  prompt: string;
+  requestedBy: string;
+  requestedAt: number;
+}
+
+export interface CodepitMcpSettings {
+  enabled: boolean;
+  agents: string[];
+  startMode: 'ask' | 'auto';
+  inheritTags: boolean;
+  maxDepth: number;
+  maxChildren: number;
+  allowMessaging: boolean;
+}
+
+export interface CodepitMcpView {
+  settings: CodepitMcpSettings;
+  defaults: CodepitMcpSettings;
+  /** Agents can reach the server (CodePit listens on loopback). */
+  reachable: boolean;
+  tools: Array<{ name: string; description: string }>;
+  auditLog: string;
+}
+
+export interface CodepitAuditEntry {
+  at: string;
+  caller?: { sessionId: string; title?: string; agentId?: string; agentSessionId?: string };
+  method: string;
+  tool?: string;
+  args?: unknown;
+  ok: boolean;
+  error?: string;
+  sessions?: string[];
+  ms?: number;
+}
+
 export interface AcpSession {
   id: string;
   agentId: string;
@@ -447,6 +501,9 @@ export interface AcpSession {
   contextMode?: ContextTransferMode;
   contextHandoffPending?: boolean;
   failoverFromId?: string;
+  spawnedBy?: SpawnedBy;
+  links?: SessionLink[];
+  pendingStart?: PendingStart;
   activeTerminalId?: string;
   promptSuggestion?: string;
   rateLimits?: VendorRateLimits;
@@ -516,6 +573,10 @@ export interface SessionSummary {
   contextWindow?: number;
   lastTurnEndedAt?: number;
   seenAt?: number;
+  agentSessionId?: string;
+  spawnedBy?: SpawnedBy;
+  links?: SessionLink[];
+  pendingStart?: PendingStart;
   /** Estimated: when the agent's prompt cache lapses (Claude only; no agent reports it). */
   cacheExpiresAt?: number;
   scheduledResume?: ScheduledResume | null;

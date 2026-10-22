@@ -746,6 +746,11 @@ export const App: React.FC = () => {
         <McpModal
           agents={agents}
           workspace={activeSession?.cwd}
+          sessions={sessions}
+          onSelectSession={(id) => {
+            setShowMcpModal(false);
+            selectSession(id);
+          }}
           onClose={() => setShowMcpModal(false)}
           onServersChange={setMcpServers}
         />

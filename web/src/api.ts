@@ -1,4 +1,7 @@
 import type {
+  CodepitAuditEntry,
+  CodepitMcpSettings,
+  CodepitMcpView,
   ContextSentRecord,
   AcpSession,
   AutoCompactSetting,
@@ -148,6 +151,25 @@ export const api = {
     request<{ session: AcpSession }>(`/api/sessions/${id}/start`, {
       method: 'POST',
     }),
+  // A session another session asked for: let it run (optionally with an edited prompt), or discard it
+  startPendingSession: (id: string, prompt?: string) =>
+    request<{ session: AcpSession }>(`/api/sessions/${id}/pending-start`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'start', prompt }),
+    }),
+  discardPendingSession: (id: string) =>
+    request<{ ok: boolean }>(`/api/sessions/${id}/pending-start`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'discard' }),
+    }),
+  // CodePit's own MCP server
+  getCodepitMcp: () => request<CodepitMcpView>('/api/codepit-mcp'),
+  updateCodepitMcp: (changes: Partial<CodepitMcpSettings>) =>
+    request<CodepitMcpView>('/api/codepit-mcp', { method: 'PUT', body: JSON.stringify(changes) }),
+  getCodepitAudit: (opts: { sessionId?: string; limit?: number } = {}) =>
+    request<{ entries: CodepitAuditEntry[] }>(
+      `/api/codepit-mcp/audit?limit=${opts.limit ?? 200}${opts.sessionId ? `&sessionId=${encodeURIComponent(opts.sessionId)}` : ''}`
+    ),
   // The agent that was running when CodePit last closed: start it again, or stop offering it
   restoreSession: (id: string) =>
     request<{ session: AcpSession }>(`/api/sessions/${id}/restore`, {
