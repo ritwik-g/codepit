@@ -2355,3 +2355,22 @@ button.tag-chip-label {
 .tags-related-you {
   color: var(--text-3);
 }
+
+/* Asked for by another session and waiting for the user: a dashed blue edge, a play mark, and its own line */
+.sb-row.is-waiting {
+  box-shadow: none;
+  outline: 1px dashed var(--info-border, var(--info));
+  outline-offset: -1px;
+}
+
+.sb-row-waiting-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.sb-row-preview.is-waiting {
+  color: var(--info);
+}

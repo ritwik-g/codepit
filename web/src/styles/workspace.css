@@ -2832,3 +2832,68 @@ button.ws-sheet-row:active:not(:disabled) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Waiting to start (here and in the session that asked for it): the approval frame, in info blue */
+.ws-approval.ws-pending-start {
+  border-color: var(--info-border, var(--border));
+  box-shadow: var(--shadow), inset 3px 0 0 var(--info);
+}
+
+.ws-pending-start .ws-approval-icon {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.ws-pending-start .ws-approval-kicker {
+  color: var(--info);
+}
+
+.ws-waiting-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ws-waiting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ws-waiting-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.ws-waiting-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.ws-waiting-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 600px) {
+  .ws-waiting-meta {
+    display: none;
+  }
+}

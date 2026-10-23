@@ -23,7 +23,7 @@ import { AgentsPanel, agentTaskCounts } from './AgentsView';
 import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
 import { SnoozeModal, TagsPanel, relatedSessionCount } from './SessionOrganize';
-import { PendingStartCard } from './PendingStartCard';
+import { PendingStartCard, WaitingChildrenCard } from './PendingStartCard';
 import { RestoreSessionBanner, isRestorable } from './RestorePrompt';
 import { ResumeAtModal, ResumeBanner } from './ResumeLater';
 
@@ -63,6 +63,8 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   const [showMobileActions, setShowMobileActions] = useState(false);
   // The restore offer is read from the summaries: the stream's shallow merge never clears a removed key
   const summary = allSessions.find((s) => s.id === session.id);
+  // Sessions this one asked for that wait for the user to start them
+  const waitingChildren = allSessions.filter((s) => s.pendingStart?.requestedBy === session.id);
   const restorable = Boolean(summary && isRestorable(summary));
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [showSnooze, setShowSnooze] = useState(false);
@@ -480,6 +482,8 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
               elicitation={session.pendingElicitation}
               onAnswered={onRefresh}
             />
+          ) : waitingChildren.length > 0 ? (
+            <WaitingChildrenCard waiting={waitingChildren} onSelectSession={onSelectSession} />
           ) : scheduledResume && session.state !== 'working' ? (
             <ResumeBanner key={session.id} sessionId={session.id} agentName={session.agentName} resume={scheduledResume} onPickTime={() => setShowResumeAt(true)} />
           ) : (

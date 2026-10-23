@@ -27,7 +27,7 @@ export function sessionStatus(
     Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume' | 'limitHit' | 'pendingStart'>>
 ): SessionStatus {
   // Another session asked for it; it waits for the user to start it
-  if (s.pendingStart) return { label: 'Waiting to start', tone: 'warn', pulse: false };
+  if (s.pendingStart) return { label: 'Waiting to start', tone: 'info', pulse: false };
   if (s.compacting && s.state !== 'blocked') return { label: 'Compacting', tone: 'accent', pulse: true };
   // Waiting to send a message later: after the usage limit resets, or when a pause ends
   const resume = s.scheduledResume;
@@ -358,7 +358,8 @@ function useNow(intervalMs: number): number {
 }
 
 const GROUPS: Array<{ id: string; label: string; test: (s: SessionSummary) => boolean }> = [
-  { id: 'needs_you', label: 'Needs you', test: needsAttention },
+  { id: 'needs_you', label: 'Needs you', test: (s) => needsAttention(s) && !s.pendingStart },
+  { id: 'waiting_start', label: 'Waiting to start', test: (s) => Boolean(s.pendingStart) },
   { id: 'working', label: 'Working', test: isWorking },
   { id: 'parked', label: 'Parked', test: (s) => s.state === 'parked' },
   { id: 'quiet', label: 'Idle', test: (s) => s.state === 'quiet' },
@@ -586,6 +587,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <SessionRow
                     key={s.id}
                     session={s}
+                    requestedBy={s.pendingStart ? sessions.find((x) => x.id === s.pendingStart!.requestedBy) : undefined}
                     now={now}
                     isSelected={s.id === selectedId}
                     onSelect={() => onSelectSession(s.id)}
@@ -675,7 +677,10 @@ const SessionRow: React.FC<{
   onSelect: () => void;
   /** Depth in a family tree; nested rows are indented. */
   depth?: number;
-}> = ({ session, now, isSelected, onSelect, depth }) => {
+  /** For a session waiting to start: the session that asked for it. */
+  requestedBy?: SessionSummary;
+}> = ({ session, now, isSelected, onSelect, depth, requestedBy }) => {
+  const waiting = Boolean(session.pendingStart);
   const status = sessionStatus(session);
   const preview = sessionPreview(session);
   const vitals = sessionVitals(session, now);
@@ -685,7 +690,7 @@ const SessionRow: React.FC<{
   const resumeAt = session.scheduledResume?.armed ? session.scheduledResume.at : undefined;
   return (
     <div
-      className={`sb-row ${isSelected ? 'is-selected' : ''} ${limited ? (resumeAt ? 'is-limited is-resuming' : 'is-limited') : ''}`}
+      className={`sb-row ${isSelected ? 'is-selected' : ''} ${limited ? (resumeAt ? 'is-limited is-resuming' : 'is-limited') : ''} ${waiting ? 'is-waiting' : ''}`}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -702,6 +707,11 @@ const SessionRow: React.FC<{
       data-depth={depth || undefined}
     >
       <div className="sb-row-top">
+        {waiting ? (
+          <span className="sb-row-dot sb-row-waiting-icon" title={status.label} role="img" aria-label={status.label}>
+            <Icon name="play" size={10} />
+          </span>
+        ) : (
         <span className={`sb-row-dot ${unseen ? 'is-unseen' : ''}`} title={unseen ? `${status.label} · finished since you last looked` : status.label}>
           <StatusDot tone={status.tone} pulse={status.pulse} label={unseen ? `${status.label}, new` : status.label} />
           {unseen && (
@@ -710,6 +720,7 @@ const SessionRow: React.FC<{
             </svg>
           )}
         </span>
+        )}
         <span className="sb-row-title">{session.title}</span>
         {session.user.pinned && (
           <span className="sb-row-pin" title="Pinned">
@@ -728,6 +739,7 @@ const SessionRow: React.FC<{
           </Badge>
         )}
         {isRestorable(session) && <RowRestoreButton session={session} />}
+        {waiting && <RowStartButton session={session} />}
         <span className="sb-row-time" title={new Date(session.updatedAt).toLocaleString()}>
           {relativeTime(session.updatedAt)}
         </span>
@@ -735,7 +747,11 @@ const SessionRow: React.FC<{
       <div className="sb-row-meta">
         <SessionMeta session={session} />
       </div>
-      {preview.approval ? (
+      {waiting ? (
+        <div className="sb-row-preview is-waiting" title={session.pendingStart!.prompt}>
+          Waiting to start · asked for by {requestedBy?.title ?? 'another session'}
+        </div>
+      ) : preview.approval ? (
         <div className="sb-row-preview is-approval" title={preview.text}>
           {preview.text}
         </div>
@@ -753,6 +769,40 @@ const SessionRow: React.FC<{
         )
       )}
     </div>
+  );
+};
+
+/** Start a waiting session with its prompt as asked, without opening it. */
+export const RowStartButton: React.FC<{ session: SessionSummary }> = ({ session }) => {
+  const [busy, setBusy] = useState(false);
+  if (busy) {
+    return (
+      <span className="sb-row-restore is-busy" role="status" aria-label="Starting the session">
+        <Spinner size={12} />
+      </span>
+    );
+  }
+  return (
+    <IconButton
+      icon="play"
+      size="sm"
+      tone="accent"
+      className="sb-row-restore"
+      label="Start session"
+      title="Start: run it with the prompt it was asked for with. Open it to read or edit the prompt first."
+      onClick={async (e) => {
+        e.stopPropagation();
+        setBusy(true);
+        try {
+          await api.startPendingSession(session.id);
+        } catch (err: any) {
+          alert(`Could not start "${session.title}": ${err?.message || err}`);
+        } finally {
+          setBusy(false);
+        }
+      }}
+      onKeyDown={(e) => e.stopPropagation()}
+    />
   );
 };
 
