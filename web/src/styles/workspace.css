@@ -1034,6 +1034,10 @@
   overflow-wrap: anywhere;
 }
 
+.ws-ask-fields > .ws-ask-message {
+  margin-top: 0;
+}
+
 .ws-ask-fields {
   grid-column: 1 / -1;
   display: flex;

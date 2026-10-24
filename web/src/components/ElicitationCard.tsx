@@ -353,7 +353,7 @@ export const ElicitationCard: React.FC<{
         <div className="ws-approval-kicker">
           {elicitation.subagent ? `Question · ${elicitation.subagent} subagent` : 'Question from the agent'}
         </div>
-        <div className="ws-ask-message">{elicitation.message}</div>
+        {collapsed && <div className="ws-ask-message">{elicitation.message}</div>}
       </div>
       <IconButton
         icon={collapsed ? 'chevronUp' : 'chevronDown'}
@@ -365,7 +365,11 @@ export const ElicitationCard: React.FC<{
       />
       {!collapsed && (
         <>
-          {topLevel.length > 0 && <div className="ws-ask-fields">{topLevel.map(renderField)}</div>}
+          {/* The message scrolls with the fields, so a long one cannot push Submit off a phone's screen */}
+          <div className="ws-ask-fields">
+            <div className="ws-ask-message">{elicitation.message}</div>
+            {topLevel.map(renderField)}
+          </div>
           <div className="ws-ask-foot">
             {serverError ? (
               <div className="ws-ask-error" role="alert">
