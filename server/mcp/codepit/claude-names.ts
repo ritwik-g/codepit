@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { store } from '../../store.js';
+import type { AcpSession } from '../../types.js';
 
 // Claude Code registers each running session in ~/.claude/sessions/<pid>.json with its
 // session id and its current name, the address SendMessage takes. Names change on resume
@@ -38,6 +40,21 @@ function readNames(): Map<string, string> {
     }
   }
   return names;
+}
+
+/**
+ * CodePit sessions Claude knows by `name`: the one running under it now first, then any
+ * stopped one that last ran under it. Auto-derived names can repeat, so there may be several.
+ */
+export function sessionsByClaudeName(name: string): AcpSession[] {
+  const live: AcpSession[] = [];
+  const stopped: AcpSession[] = [];
+  for (const s of store.getAll()) {
+    const current = claudeSessionName(s.agentSessionId);
+    if (current === name) live.push(s);
+    else if (!current && s.lastAgentSessionName === name) stopped.push(s);
+  }
+  return [...live, ...stopped];
 }
 
 /** The live Claude session's current name, by its session id. */

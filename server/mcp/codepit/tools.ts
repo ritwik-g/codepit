@@ -7,7 +7,8 @@ import { store } from '../../store.js';
 import { searchSessions } from '../../search.js';
 import { getAgent, listAgents } from '../../agents/registry.js';
 import { MAX_TAGS, normalizeTags } from '../../tags.js';
-import { claudeSessionName } from './claude-names.js';
+import { claudeSessionName, sessionsByClaudeName } from './claude-names.js';
+import { logEvent, preview } from '../../event-log.js';
 import { readCodepitMcpSettings, type CodepitMcpSettings } from './settings.js';
 import type { AcpSession, SessionLink, SessionLinkKind, SessionSummary } from '../../types.js';
 
@@ -82,6 +83,30 @@ function sessionArg(args: Record<string, any>, key: string, fallback?: AcpSessio
   return s;
 }
 
+/** send_to_session's target: by exactly one of id, name or agent_session_id. */
+function messageTarget(args: Record<string, any>): AcpSession {
+  const given = ['id', 'name', 'agent_session_id'].filter((k) => optString(args, k, 200));
+  if (given.length !== 1) throw new ToolError('Give exactly one of id, name or agent_session_id');
+  if (given[0] === 'id') return sessionArg(args, 'id');
+  if (given[0] === 'agent_session_id') {
+    const id = optString(args, 'agent_session_id', 200)!;
+    const found = store.getAll().filter((s) => s.agentSessionId === id || s.agentSessions?.some((a) => a.id === id));
+    if (found.length === 0) throw new ToolError(`No CodePit session has agent session ${id}`);
+    return found[0];
+  }
+  const name = optString(args, 'name', 200)!;
+  const found = sessionsByClaudeName(name);
+  if (found.length === 0) throw new ToolError(`No CodePit session is or was named ${name}. find_session looks one up by title or text.`);
+  // Auto-derived names repeat: the one running under the name wins, otherwise it must be the only one
+  const running = found.filter((s) => claudeSessionName(s.agentSessionId) === name);
+  const candidates = running.length > 0 ? running : found;
+  if (candidates.length > 1) {
+    const options = candidates.slice(0, 5).map((s) => `${s.id} ("${s.title}")`).join(', ');
+    throw new ToolError(`More than one session is named ${name}: ${options}. Send by id instead.`);
+  }
+  return candidates[0];
+}
+
 // ------------------------------------------------------------------ views
 
 const summaries = (): SessionSummary[] => sessionManager.listSessions();
@@ -128,12 +153,6 @@ function rootOf(id: string): string {
     current = parent;
   }
   return current;
-}
-
-const inFamily = (a: string, b: string) => rootOf(a) === rootOf(b);
-
-function isLinked(a: AcpSession, b: AcpSession): boolean {
-  return Boolean(a.links?.some((l) => l.sessionId === b.id) || b.links?.some((l) => l.sessionId === a.id));
 }
 
 /** The memory-graph stamp: [YYYY-MM-DD HH:MM] [repo:<main clone>] [name:<name>] [id:<agent session id>]. */
@@ -441,27 +460,52 @@ const TOOLS: ToolDef[] = [
   {
     name: 'send_to_session',
     description:
-      'Send a message into another session as its next prompt: the session that started this one, a session this one started (or anything else started from the same root), or a linked session. It is queued if that session is busy. The message is marked as coming from this session.',
+      'Send a message into any other CodePit session as its next prompt, by its CodePit id, its Claude session name, or its agent session id. ' +
+      "A session whose agent is stopped is started again, continuing its conversation, so this also reaches sessions Claude's SendMessage cannot: " +
+      'use it when SendMessage fails because the session is not running. It is queued if that session is busy. The message is marked as coming from this session.',
     inputSchema: obj(
       {
         id: str('The CodePit session id'),
+        name: str('The Claude session name, the address SendMessage takes (e.g. unstract-repos-55)'),
+        agent_session_id: str("The agent's own session id (e.g. a Claude session id)"),
         message: str('What to send'),
       },
-      ['id', 'message']
+      ['message']
     ),
     when: (settings) => settings.allowMessaging,
     run: async (caller, args) => {
-      const target = sessionArg(args, 'id');
-      if (target.id === caller.id) throw new ToolError('That is this session');
-      if (!inFamily(caller.id, target.id) && !isLinked(caller, target)) {
-        throw new ToolError('Only sessions related to this one can be messaged: its parent, sessions started from the same root, or linked sessions');
-      }
-      if (target.pendingStart) throw new ToolError('That session is waiting for the user to start it');
+      const addressed = { name: optString(args, 'name', 200), agentSessionId: optString(args, 'agent_session_id', 200) };
+      const to = { name: addressed.name, sessionId: optString(args, 'id', 100) };
       const message = optString(args, 'message', MAX_PROMPT);
-      if (!message) throw new ToolError('message is required');
-      const text = `[Message from the CodePit session "${caller.title}" (id ${caller.id})]\n\n${message}`;
-      const { queued } = await sessionManager.queuePrompt(target.id, text);
-      return { sessions: [target.id], result: { id: target.id, queued, note: queued ? 'It is busy: the message goes out when its current turn ends.' : 'Sent.' } };
+      const from = { sessionId: caller.id, title: caller.title, name: agentSessionName(caller) ?? caller.lastAgentSessionName };
+      try {
+        const target = messageTarget(args);
+        if (target.id === caller.id) throw new ToolError('That is this session');
+        if (target.pendingStart) throw new ToolError('That session is waiting for the user to start it');
+        if (!message) throw new ToolError('message is required');
+        const replyTo = from.name ? `reply with SendMessage to "${from.name}", or ` : 'reply ';
+        const text = `[Message from the CodePit session "${caller.title}" (id ${caller.id}); ${replyTo}with the codepit send_to_session tool, id ${caller.id}]\n\n${message}`;
+        const wasRunning = sessionManager.isAgentRunning(target.id);
+        const { queued } = await sessionManager.queuePrompt(target.id, text);
+        const delivery = queued ? 'queued' : wasRunning ? 'sent' : 'started';
+        logEvent({
+          kind: 'message.sent',
+          via: 'codepit',
+          from,
+          to: { sessionId: target.id, title: target.title, name: agentSessionName(target) ?? target.lastAgentSessionName },
+          delivery,
+          preview: preview(message),
+        });
+        const note = {
+          queued: 'It is busy: the message goes out when its current turn ends.',
+          sent: 'Sent.',
+          started: 'Its agent was stopped: CodePit started it again, continuing its conversation, and sent the message.',
+        }[delivery];
+        return { sessions: [target.id], result: { id: target.id, title: target.title, delivery, queued, note } };
+      } catch (err: any) {
+        logEvent({ kind: 'message.refused', via: 'codepit', from, to, error: err?.message || String(err), ...(message ? { preview: preview(message) } : {}) });
+        throw err;
+      }
     },
   },
 ];

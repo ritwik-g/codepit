@@ -1,5 +1,6 @@
 import type {
   CodepitAuditEntry,
+  SessionEvent,
   CodepitMcpSettings,
   CodepitMcpView,
   ContextSentRecord,
@@ -184,6 +185,13 @@ export const api = {
   cancelScheduledResume: (id: string) =>
     request<{ scheduledResume: null }>(`/api/sessions/${id}/scheduled-resume`, { method: 'DELETE' }),
   resumeNow: (id: string) => request<{ ok: boolean }>(`/api/sessions/${id}/scheduled-resume/now`, { method: 'POST' }),
+  getEvents: (opts: { sessionId?: string; limit?: number } = {}) =>
+    request<{ events: SessionEvent[]; file: string }>(
+      `/api/events?limit=${opts.limit ?? 200}${opts.sessionId ? `&sessionId=${encodeURIComponent(opts.sessionId)}` : ''}`
+    ),
+  getIdleStop: () => request<{ hours: number; choices: number[] }>('/api/settings/idle-stop'),
+  setIdleStop: (hours: number) =>
+    request<{ hours: number; choices: number[] }>('/api/settings/idle-stop', { method: 'PUT', body: JSON.stringify({ hours }) }),
   getLimitResumeMode: () => request<{ mode: LimitResumeMode }>('/api/settings/limit-resume'),
   setLimitResumeMode: (mode: LimitResumeMode) =>
     request<{ mode: LimitResumeMode }>('/api/settings/limit-resume', { method: 'PUT', body: JSON.stringify({ mode }) }),

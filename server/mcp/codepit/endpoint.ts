@@ -3,7 +3,7 @@ import { getRemoteAddress, isLoopbackAddress } from '../../security.js';
 import { store } from '../../store.js';
 import { writeAudit, type AuditCaller } from './audit.js';
 import { sessionForToken } from './access.js';
-import { readCodepitMcpSettings } from './settings.js';
+import { readCodepitMcpSettings, type CodepitMcpSettings } from './settings.js';
 import { ToolError, callTool, listTools } from './tools.js';
 import type { AcpSession } from '../../types.js';
 
@@ -22,6 +22,14 @@ const INSTRUCTIONS =
   'sessions by CodePit id, title, agent session id or Claude session name (list_sessions, find_session, get_session), tag and link ' +
   'sessions so related work is grouped (tag_session, link_sessions), and tell this session who it is (whoami). Every call is recorded ' +
   "in CodePit's audit log.";
+
+const MESSAGING_INSTRUCTIONS =
+  ' To message another session, use SendMessage as usual. SendMessage only reaches sessions whose agent is running, and CodePit stops ' +
+  'agents left unused; if SendMessage fails because the session is not found or not running, send the same message with the codepit ' +
+  'send_to_session tool, by the same name: CodePit starts that session again and delivers it.';
+
+/** What every session is told about the server; the messaging part only when send_to_session is offered. */
+export const instructionsFor = (settings: CodepitMcpSettings) => INSTRUCTIONS + (settings.allowMessaging ? MESSAGING_INSTRUCTIONS : '');
 
 interface RpcMessage {
   jsonrpc?: string;
@@ -49,7 +57,7 @@ async function handle(msg: RpcMessage, caller: AcpSession): Promise<object | nul
         protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'codepit', version: '1.0.0' },
-        instructions: INSTRUCTIONS,
+        instructions: instructionsFor(readCodepitMcpSettings()),
       });
     }
     case 'ping':

@@ -234,6 +234,7 @@ interface SidebarProps {
   onOpenSubscriptionsModal: () => void;
   onOpenNetworkModal: () => void;
   onOpenMcpModal: () => void;
+  onOpenSettingsModal: () => void;
   /** MCP servers switched on, shown next to the MCP entry. */
   mcpActiveCount: number;
   hasActiveSession?: boolean;
@@ -376,6 +377,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSubscriptionsModal,
   onOpenNetworkModal,
   onOpenMcpModal,
+  onOpenSettingsModal,
   mcpActiveCount,
   hasActiveSession,
   activeSessionTitle,
@@ -644,6 +646,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={onOpenSubscriptionsModal}
             title="Subscriptions, credentials and usage across vendors"
           />
+          <IconButton icon="settings" label="Settings" size="sm" onClick={onOpenSettingsModal} />
         </div>
       </div>
     </aside>

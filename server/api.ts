@@ -10,6 +10,8 @@ import { hasAgent, listAgents } from './agents/registry.js';
 import { AgentNotRunningError, ElicitationAnswerError, InvalidOptionError, NothingToCompactError, QueuedPromptNotFoundError, RestoreError, ScheduleError, isSafeImportedSessionId, listImportableAgentSessions, sessionManager } from './acp/session-mgr.js';
 import { parseAutoCompact } from './compaction.js';
 import { isLimitResumeMode, parseScheduleRequest, readLimitResumeMode } from './limit-resume.js';
+import { IDLE_STOP_CHOICES, isIdleStopHours, readIdleStopHours } from './idle-stop.js';
+import { eventLogFile, readEvents } from './event-log.js';
 import { TurnInFlightError } from './acp/client-host.js';
 import { searchTranscripts } from './search.js';
 import { getGitInfo } from './git.js';
@@ -113,6 +115,27 @@ apiRouter.put('/settings/limit-resume', (req: Request, res: Response) => {
     return;
   }
   res.json({ mode: sessionManager.setLimitResumeMode(mode) });
+});
+
+// Stop a running agent nobody has used for this many hours: 0 (off) or one of IDLE_STOP_CHOICES
+apiRouter.get('/settings/idle-stop', (_req: Request, res: Response) => {
+  res.json({ hours: readIdleStopHours(), choices: IDLE_STOP_CHOICES });
+});
+
+apiRouter.put('/settings/idle-stop', (req: Request, res: Response) => {
+  const hours = req.body?.hours;
+  if (!isIdleStopHours(hours)) {
+    res.status(400).json({ error: `hours must be one of ${IDLE_STOP_CHOICES.join(', ')}` });
+    return;
+  }
+  res.json({ hours: sessionManager.setIdleStopHours(hours), choices: IDLE_STOP_CHOICES });
+});
+
+// What sessions did to each other (messages) and agents CodePit stopped, newest first
+apiRouter.get('/events', (req: Request, res: Response) => {
+  const limit = Number(req.query.limit) || undefined;
+  const sessionId = typeof req.query.sessionId === 'string' && req.query.sessionId ? req.query.sessionId : undefined;
+  res.json({ events: readEvents({ limit, sessionId }), file: eventLogFile() });
 });
 
 // 2. List attention-ranked sessions

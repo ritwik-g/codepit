@@ -135,7 +135,7 @@ export const CodepitServerPanel: React.FC<{
           checked={s.allowMessaging}
           onChange={(allowMessaging) => save({ allowMessaging })}
           label="Let sessions message each other"
-          description="Adds send_to_session: an agent can send a prompt into its parent, the sessions it started, or linked sessions. Claude sessions can already use SendMessage without this."
+          description="Adds send_to_session: an agent can send a prompt into any other session, starting its agent again if it was stopped. Claude's SendMessage only reaches running sessions. Every message is in the event log."
         />
         <div className="cpm-limits">
           <LimitField label="Levels deep" hint="Sessions starting sessions" value={s.maxDepth} min={1} max={10} onSave={(maxDepth) => save({ maxDepth })} />

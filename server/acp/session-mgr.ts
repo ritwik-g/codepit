@@ -18,10 +18,13 @@ import { getClaudeRateLimits, onClaudeRateLimitsChanged, refreshClaudeRateLimits
 import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, rememberAgentOptions, resolveModelValue } from './agent-options.js';
 import { logQueueEvent } from '../queue-log.js';
 import { decideLimitResume, limitNoticeInText, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit, type UsageLimitHit } from '../limit-resume.js';
+import { IDLE_STOPS_PER_TICK, idleLabel, readIdleStopHours, writeIdleStopHours } from '../idle-stop.js';
 import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, subagentStopRequest, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
 import type { SpawnedBy } from '../types.js';
 import { revokeToken } from '../mcp/codepit/access.js';
+import { claudeSessionName, sessionsByClaudeName } from '../mcp/codepit/claude-names.js';
+import { logEvent, preview } from '../event-log.js';
 import type { AcpSession, ContextSentRecord, PendingContext, LimitHit, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
 /**
@@ -260,6 +263,11 @@ export class SessionManager extends EventEmitter {
     });
   }
 
+  /** True while the session's agent process is running (or starting). */
+  isAgentRunning(sessionId: string): boolean {
+    return this.activeHosts.has(sessionId) || this.startingHosts.has(sessionId);
+  }
+
   /** True while a prompt is being delivered or the agent is still working on it. */
   isTurnInFlight(sessionId: string): boolean {
     return this.activePrompts.has(sessionId) || Boolean(this.activeHosts.get(sessionId)?.isTurnInFlight);
@@ -477,6 +485,11 @@ export class SessionManager extends EventEmitter {
       } catch (err) {
         console.error('[session-mgr] Sending scheduled resumes failed:', err);
       }
+      try {
+        await this.stopIdleAgents();
+      } catch (err) {
+        console.error('[session-mgr] Stopping idle agents failed:', err);
+      }
       let anyChanged = false;
       const sessions = store.getAll();
       for (const session of sessions) {
@@ -497,6 +510,15 @@ export class SessionManager extends EventEmitter {
             console.warn(`[session-mgr] Turn on ${session.id} silent for ${STALE_TURN_MS / 60_000}m; cancelling`);
             this.cancelPrompt(session.id, 'silent turn').catch(() => {});
             continue;
+          }
+        }
+
+        // Claude's name for a running agent, kept so the session is found by it once stopped
+        if (host && session.agentSessionId) {
+          const name = claudeSessionName(session.agentSessionId);
+          if (name && name !== session.lastAgentSessionName) {
+            session.lastAgentSessionName = name;
+            changed = true;
           }
         }
 
@@ -912,6 +934,14 @@ export class SessionManager extends EventEmitter {
       const turn = ensureAgentTurn(s);
       turn.segments!.push({ kind: 'peer', id: `seg-${Date.now().toString(36)}-${turn.segments!.length}`, ...peer });
       store.save(s);
+      const sender = findByClaudeName(peer.fromName ?? peer.from);
+      logEvent({
+        kind: 'message.received',
+        via: 'claude',
+        from: { sessionId: sender?.id, title: sender?.title, name: peer.fromName ?? peer.from },
+        to: { sessionId: s.id, title: s.title, name: s.lastAgentSessionName },
+        preview: preview(peer.text),
+      });
       this.emit('sessionStream', { sessionId: s.id, type: 'message', text: '', turn: withoutToolCalls(turn) });
     });
 
@@ -965,6 +995,7 @@ export class SessionManager extends EventEmitter {
         turn.segments.push({ kind: 'tool', id: `seg-${record.id}`, toolCallId: record.id });
       }
       const agentTasks = this.agentTasksChanged(s.id, trackToolCall(s, record));
+      logClaudeSend(s, record);
       store.save(s);
       this.emit('sessionStream', { sessionId: s.id, type: 'toolCall', toolCall: record, turn: withoutToolCalls(turn), agentTasks });
     });
@@ -975,7 +1006,9 @@ export class SessionManager extends EventEmitter {
       const owner = findToolCall(s, record.id);
       if (!owner) return;
       const patch = Object.fromEntries(Object.entries(record).filter(([, v]) => v !== undefined));
+      const wasOpen = owner.call.status !== 'completed' && owner.call.status !== 'failed';
       Object.assign(owner.call, patch);
+      if (wasOpen) logClaudeSend(s, owner.call);
       const agentTasks = this.agentTasksChanged(s.id, trackToolCallUpdate(s, owner.call));
       store.save(s);
       this.emit('sessionStream', { sessionId: s.id, type: 'toolCallUpdate', toolCall: owner.call, turn: withoutToolCalls(owner.turn), agentTasks });
@@ -1801,6 +1834,45 @@ export class SessionManager extends EventEmitter {
     return due;
   }
 
+  /**
+   * Stop every running agent nobody has used for the idle-stop setting's hours. Activity is the
+   * agent's own output and terminal output, so an agent is never stopped mid-turn, with
+   * background work or subagents running, waiting on the user's answer, or with a resume
+   * scheduled. Returns the sessions stopped.
+   */
+  async stopIdleAgents(now = Date.now(), hours = readIdleStopHours()): Promise<string[]> {
+    if (hours <= 0) return [];
+    const stopped: string[] = [];
+    for (const [id, host] of this.activeHosts) {
+      if (stopped.length >= IDLE_STOPS_PER_TICK) break;
+      if (now - host.lastActivityAt < hours * 3_600_000) continue;
+      const s = store.get(id);
+      if (!s) continue;
+      if (
+        this.isTurnInFlight(id) ||
+        this.startingHosts.has(id) ||
+        this.restoring.has(id) ||
+        this.compactionRuns.has(id) ||
+        s.pendingPermission ||
+        s.pendingElicitation ||
+        s.scheduledResume ||
+        runningBackgroundWork(s) > 0
+      ) {
+        continue;
+      }
+      console.log(`[session-mgr] Stopping ${id}: agent unused since ${new Date(host.lastActivityAt).toISOString()}`);
+      await this.stopSessionAgent(id, { idleHours: hours });
+      stopped.push(id);
+    }
+    return stopped;
+  }
+
+  /** How many idle hours stop a running agent, for every session; 0 is off. */
+  setIdleStopHours(hours: number): number {
+    writeIdleStopHours(hours);
+    return hours;
+  }
+
   private sendScheduledResume(sessionId: string): boolean {
     const s = store.get(sessionId);
     const resume = s?.scheduledResume;
@@ -2022,19 +2094,29 @@ export class SessionManager extends EventEmitter {
    * Kills the ACP client host child process (SIGTERM -> SIGKILL) and releases the PTY terminal.
    * Marks context handoff as pending so the next prompt will automatically re-spawn the agent seamlessly.
    */
-  async stopSessionAgent(sessionId: string): Promise<AcpSession> {
+  async stopSessionAgent(sessionId: string, opts: { idleHours?: number } = {}): Promise<AcpSession> {
     const session = store.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
+    const idle = opts.idleHours !== undefined;
 
     const host = this.activeHosts.get(sessionId);
     if (host?.isTurnInFlight) {
       await host.cancel().catch(() => {});
     }
-    this.dropHost(sessionId, 'Stopped');
+    // Read while Claude still lists it: once stopped, this is how the session is found by name
+    const name = claudeSessionName(session.agentSessionId);
+    if (name) session.lastAgentSessionName = name;
+    if (host) {
+      logEvent({ kind: 'agent.stopped', to: { sessionId, title: session.title, name: session.lastAgentSessionName }, reason: idle ? 'idle' : 'user', ...(idle ? { idleHours: opts.idleHours } : {}) });
+    }
+    this.dropHost(sessionId, idle ? 'Stopped after going unused' : 'Stopped');
     ptyManager.release(`session-term-${sessionId}`);
 
-    session.state = 'parked';
-    session.agentStopped = true;
+    // Only a Stop the user made parks the session; an idle one keeps its place in the list
+    if (!idle) {
+      session.state = 'parked';
+      session.agentStopped = true;
+    }
     delete session.restore;
     // Stopped on purpose: a resume must not start it again
     session.scheduledResume = null;
@@ -2042,18 +2124,20 @@ export class SessionManager extends EventEmitter {
     clearPendingRequests(session);
     session.activeTerminalId = undefined;
     session.isAgentRunning = false;
-    session.updatedAt = Date.now();
+    // Stopped for being idle is bookkeeping: it must not lift the session in the recency ranking
+    if (!idle) session.updatedAt = Date.now();
 
+    const why = idle ? `Agent process stopped after ${idleLabel(opts.idleHours!)} without use, to free memory.` : 'Agent process stopped.';
     session.turns.push({
       id: `sys-${Date.now()}`,
       role: 'system',
       content: resumableSessionId(session)
-        ? `🛑 Agent process stopped. Your next message starts it again and continues the same agent session.`
-        : `🛑 Agent process stopped. Your next message starts a new agent session with a summary of this conversation.`,
+        ? `🛑 ${why} Your next message starts it again and continues the same agent session.`
+        : `🛑 ${why} Your next message starts a new agent session with a summary of this conversation.`,
       timestamp: Date.now(),
     });
 
-    store.save(session);
+    store.save(session, { touch: !idle });
     this.emit('sessionsUpdated', this.listSessions());
     this.emit('sessionStream', { sessionId, type: 'sessionStopped', session });
 
@@ -3311,6 +3395,37 @@ function findToolCall(s: AcpSession, toolCallId: string): { turn: TurnMessage; c
     if (call) return { turn, call };
   }
   return null;
+}
+
+/** The CodePit session Claude knows by `name`, when that is clear. */
+function findByClaudeName(name: string | undefined): AcpSession | undefined {
+  return name ? sessionsByClaudeName(name)[0] : undefined;
+}
+
+/** Subagents of the same Claude session are addressed by their agent id, e.g. a64f5a7e4818c6dd3. */
+const SUBAGENT_ADDRESS = /^a[0-9a-f]{16}$/;
+
+/** Log a finished Claude SendMessage to another session; messages to its own subagents are left out. */
+function logClaudeSend(s: AcpSession, call: ToolCallRecord): void {
+  if (call.toolName !== 'SendMessage' || (call.status !== 'completed' && call.status !== 'failed')) return;
+  const input = (call.input ?? {}) as { to?: unknown; message?: unknown };
+  if (typeof input.to !== 'string' || SUBAGENT_ADDRESS.test(input.to)) return;
+  let result: { success?: boolean; message?: string } = {};
+  try {
+    result = JSON.parse(call.output ?? '');
+  } catch {
+    // not JSON: judged by the call's status alone
+  }
+  const ok = call.status === 'completed' && result.success !== false;
+  const target = findByClaudeName(input.to);
+  logEvent({
+    kind: ok ? 'message.sent' : 'message.refused',
+    via: 'claude',
+    from: { sessionId: s.id, title: s.title, name: s.lastAgentSessionName },
+    to: { sessionId: target?.id, title: target?.title, name: input.to },
+    ...(ok ? { delivery: 'sent' as const } : { error: result.message ?? call.output?.slice(0, 300) ?? 'SendMessage failed' }),
+    preview: typeof input.message === 'string' ? preview(input.message) : undefined,
+  });
 }
 
 function findElicitationCall(s: AcpSession, requestId: string): { turn: TurnMessage; call: ToolCallRecord } | null {

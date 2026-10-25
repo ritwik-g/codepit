@@ -10,6 +10,7 @@ import { HomeDashboard } from './components/HomeDashboard';
 import { BrandMark } from './components/BrandMark';
 import { SubscriptionsUsageModal } from './components/SubscriptionsUsageModal';
 import { NetworkModal } from './components/NetworkModal';
+import { SettingsModal } from './components/SettingsModal';
 import { PairScreen } from './components/PairScreen';
 import { McpModal } from './components/mcp/McpModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -70,6 +71,7 @@ export const App: React.FC = () => {
   const [showSubscriptionsModal, setShowSubscriptionsModal] = useState(false);
   const [showNetworkModal, setShowNetworkModal] = useState(false);
   const [showMcpModal, setShowMcpModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   // Saved MCP servers, for the sidebar's count of the ones switched on
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [authError, setAuthError] = useState(false);
@@ -353,7 +355,7 @@ export const App: React.FC = () => {
   }, [pairingToast]);
 
   const anyModalOpen =
-    showNewModal || showSwitchModal || showPalette || showSubscriptionsModal || showNetworkModal || showMcpModal;
+    showNewModal || showSwitchModal || showPalette || showSubscriptionsModal || showNetworkModal || showMcpModal || showSettingsModal;
 
   const openNewSession = useCallback((agentId?: string) => {
     setNewSessionAgentId(agentId ?? null);
@@ -415,6 +417,7 @@ export const App: React.FC = () => {
         setShowSubscriptionsModal(false);
         setShowNetworkModal(false);
         setShowMcpModal(false);
+        setShowSettingsModal(false);
         return;
       }
 
@@ -582,6 +585,14 @@ export const App: React.FC = () => {
         group: 'Actions',
         keywords: 'settings billing credentials cost plan limits',
         run: () => setShowSubscriptionsModal(true),
+      },
+      {
+        id: 'settings',
+        label: 'Open settings',
+        icon: 'settings',
+        group: 'Actions',
+        keywords: 'preferences idle stop agents memory',
+        run: () => setShowSettingsModal(true),
       }
     );
     for (const a of agents) {
@@ -625,6 +636,7 @@ export const App: React.FC = () => {
         onOpenSubscriptionsModal={() => setShowSubscriptionsModal(true)}
         onOpenNetworkModal={() => setShowNetworkModal(true)}
         onOpenMcpModal={() => setShowMcpModal(true)}
+        onOpenSettingsModal={() => setShowSettingsModal(true)}
         mcpActiveCount={mcpServers.filter((s) => s.enabled).length}
         hasActiveSession={Boolean(activeSession)}
         activeSessionTitle={activeSession?.title}
@@ -753,6 +765,16 @@ export const App: React.FC = () => {
           }}
           onClose={() => setShowMcpModal(false)}
           onServersChange={setMcpServers}
+        />
+      )}
+
+      {showSettingsModal && (
+        <SettingsModal
+          onClose={() => setShowSettingsModal(false)}
+          onSelectSession={(id) => {
+            setShowSettingsModal(false);
+            selectSession(id);
+          }}
         />
       )}
     </div>

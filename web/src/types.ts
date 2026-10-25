@@ -442,6 +442,21 @@ export interface CodepitAuditEntry {
   ms?: number;
 }
 
+/** One entry of CodePit's event log: a message between sessions, or an agent stopped. */
+export interface SessionEvent {
+  at: string;
+  kind: 'message.sent' | 'message.refused' | 'message.received' | 'agent.stopped';
+  via?: 'codepit' | 'claude';
+  from?: { sessionId?: string; title?: string; name?: string };
+  to?: { sessionId?: string; title?: string; name?: string };
+  delivery?: 'sent' | 'queued' | 'started';
+  error?: string;
+  preview?: string;
+  reason?: 'idle' | 'user';
+  idleHours?: number;
+  sessions: string[];
+}
+
 export interface AcpSession {
   id: string;
   agentId: string;

@@ -19,6 +19,7 @@ const { store } = await import('../server/store.js');
 const { tokenFor } = await import('../server/mcp/codepit/access.js');
 const { parseCodepitMcpSettings, readCodepitMcpSettings, writeCodepitMcpSettings, DEFAULT_CODEPIT_MCP } = await import('../server/mcp/codepit/settings.js');
 const { readAudit } = await import('../server/mcp/codepit/audit.js');
+const { readEvents } = await import('../server/event-log.js');
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {
@@ -192,7 +193,55 @@ async function main(): Promise<void> {
     const sent = await tool(tokenFor(child.id), 'send_to_session', { id: parent.id, message: 'Login page done' });
     check('child messages its parent', !sent.isError, sent);
     check('arrives marked as from the child', await until(() => sessionManager.getSession(parent.id)!.turns.some((t) => t.role === 'user' && (t.content ?? '').includes('Login page done') && (t.content ?? '').includes(`id ${child.id}`))));
-    check('unrelated session refused', (await tool(tokenFor(child.id), 'send_to_session', { id: off.id, message: 'hi' })).isError);
+    const initMsg = await rpc(token, 'initialize', { protocolVersion: '2025-06-18' });
+    check('the instructions say to fall back to send_to_session', /SendMessage fails[\s\S]*send_to_session/.test(initMsg.json?.result?.instructions ?? ''), initMsg.json?.result?.instructions);
+    const idle = (id: string) => until(() => !sessionManager.isTurnInFlight(id), 10_000);
+    await idle(parent.id);
+    const unrelated = await tool(tokenFor(child.id), 'send_to_session', { id: off.id, message: 'hi from a stranger' });
+    check('any session can be messaged, related or not', !unrelated.isError && ['sent', 'started'].includes(unrelated.data.delivery), unrelated);
+    await idle(off.id);
+    const offAgentId = sessionManager.getSession(off.id)!.agentSessionId!;
+    const offReg = path.join(claudeDir, 'sessions', '999999.json');
+    fs.writeFileSync(offReg, JSON.stringify({ pid: process.pid, sessionId: offAgentId, name: 'off-7c' }));
+    const sentByName = await tool(tokenFor(child.id), 'send_to_session', { name: 'off-7c', message: 'by name' });
+    check('by Claude session name', !sentByName.isError && sentByName.data.id === off.id && sentByName.data.delivery === 'sent', sentByName);
+    await idle(off.id);
+    check('both id and name refused', (await tool(tokenFor(child.id), 'send_to_session', { id: off.id, name: 'off-7c', message: 'x' })).isError);
+
+    await sessionManager.stopSessionAgent(off.id);
+    fs.rmSync(offReg); // Claude takes a stopped session off its list
+    check('the name is kept when the agent stops', store.get(off.id)!.lastAgentSessionName === 'off-7c');
+    const woken = await tool(tokenFor(child.id), 'send_to_session', { name: 'off-7c', message: 'wake up and look' });
+    check('a stopped session is started and sent the message', !woken.isError && woken.data.delivery === 'started' && /started it again/.test(woken.data.note), woken);
+    check('its agent runs again', await until(() => sessionManager.isAgentRunning(off.id)));
+    check('the message arrived, with how to reply', await until(() => sessionManager.getSession(off.id)!.turns.some((t) => t.role === 'user' && (t.content ?? '').includes('wake up and look') && (t.content ?? '').includes(`send_to_session tool, id ${child.id}`))));
+    await idle(off.id);
+    await sessionManager.stopSessionAgent(off.id);
+    store.get(ni.id)!.lastAgentSessionName = 'off-7c';
+    const twice = await tool(tokenFor(child.id), 'send_to_session', { name: 'off-7c', message: 'which one?' });
+    check('a name two stopped sessions had is refused, naming both', twice.isError && twice.text.includes(off.id) && twice.text.includes(ni.id), twice.text);
+    delete store.get(ni.id)!.lastAgentSessionName;
+
+    console.log('12b. Event log');
+    store.get(off.id)!.lastAgentSessionName = 'off-7c';
+    const parentHost = (sessionManager as any).activeHosts.get(parent.id);
+    const call = (id: string, to: string, output: string, status = 'completed') =>
+      parentHost.emit('toolCall', { id, kind: 'other', title: 'SendMessage', toolName: 'SendMessage', status, input: { to, message: `to ${to}` }, output });
+    call('toolu_sm_ok', 'off-7c', '{"success":true,"message":"delivered"}');
+    call('toolu_sm_fail', 'gone-99', '{"success":false,"message":"No session named gone-99"}');
+    call('toolu_sm_sub', 'a64f5a7e4818c6dd3', '{"success":true}');
+    parentHost.emit('peerMessage', { from: 'off-7c', fromName: 'off-7c', text: 'reply from off' });
+    const events = readEvents({ limit: 1000 });
+    check("Claude's SendMessage to another session is logged", events.some((e) => e.kind === 'message.sent' && e.via === 'claude' && e.from?.sessionId === parent.id && e.to?.sessionId === off.id && e.preview === 'to off-7c'));
+    check('a failed SendMessage is logged with its error', events.some((e) => e.kind === 'message.refused' && e.via === 'claude' && e.to?.name === 'gone-99' && /No session named/.test(e.error ?? '')));
+    check("messages to the session's own subagents are left out", !events.some((e) => e.to?.name === 'a64f5a7e4818c6dd3'));
+    check('a received message is logged with its sender', events.some((e) => e.kind === 'message.received' && e.to?.sessionId === parent.id && e.from?.sessionId === off.id && e.preview === 'reply from off'));
+    check('a message that started an agent is logged', events.some((e) => e.kind === 'message.sent' && e.via === 'codepit' && e.delivery === 'started' && e.from?.sessionId === child.id && e.to?.sessionId === off.id && e.to?.name === 'off-7c' && e.preview === 'wake up and look'), events.slice(0, 5));
+    check('a refused message is logged with why', events.some((e) => e.kind === 'message.refused' && /More than one/.test(e.error ?? '') && e.to?.name === 'off-7c'));
+    check('stopping an agent is logged', events.some((e) => e.kind === 'agent.stopped' && e.reason === 'user' && e.to?.sessionId === off.id));
+    const perOff = await api('GET', `/events?sessionId=${off.id}&limit=500`);
+    check('events read per session over HTTP', perOff.json.events.length > 0 && perOff.json.events.every((e: any) => e.sessions.includes(off.id)), perOff.json);
+    check('owner-only event log', (fs.statSync(path.join(testAppDir, 'logs', 'events.jsonl')).mode & 0o777) === 0o600);
 
     console.log('13. Turned off');
     await api('PUT', '/codepit-mcp', { enabled: false });

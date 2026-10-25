@@ -449,6 +449,11 @@ export interface AcpSession {
   agentCommands?: AgentCommand[];
   /** The running agent's own session id (for Claude, its Claude Code session). */
   agentSessionId?: string;
+  /**
+   * Claude's name for the session (SendMessage's address) when its agent last ran. Claude only
+   * lists running sessions, so this is how a stopped one is still found by the name it had.
+   */
+  lastAgentSessionName?: string;
   /** The agent session to continue on the next start (ACP session/resume); absent means start fresh. */
   agentResume?: { agentId: string; sessionId: string; cwd: string; savedAt: number };
   /**

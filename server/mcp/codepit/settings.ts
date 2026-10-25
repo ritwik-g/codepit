@@ -18,7 +18,7 @@ export interface CodepitMcpSettings {
   maxDepth: number;
   /** How many sessions one session may start. */
   maxChildren: number;
-  /** send_to_session: an agent may send messages into its own parent, children and linked sessions. */
+  /** send_to_session: an agent may send messages into any other session, starting a stopped one. */
   allowMessaging: boolean;
 }
 
