@@ -770,6 +770,7 @@ export const App: React.FC = () => {
 
       {showSettingsModal && (
         <SettingsModal
+          sessions={sessions}
           onClose={() => setShowSettingsModal(false)}
           onSelectSession={(id) => {
             setShowSettingsModal(false);

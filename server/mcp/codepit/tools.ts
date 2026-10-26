@@ -486,7 +486,7 @@ const TOOLS: ToolDef[] = [
         const replyTo = from.name ? `reply with SendMessage to "${from.name}", or ` : 'reply ';
         const text = `[Message from the CodePit session "${caller.title}" (id ${caller.id}); ${replyTo}with the codepit send_to_session tool, id ${caller.id}]\n\n${message}`;
         const wasRunning = sessionManager.isAgentRunning(target.id);
-        const { queued } = await sessionManager.queuePrompt(target.id, text);
+        const { queued } = await sessionManager.queuePrompt(target.id, text, undefined, { startReason: `Message from the session "${caller.title}"` });
         const delivery = queued ? 'queued' : wasRunning ? 'sent' : 'started';
         logEvent({
           kind: 'message.sent',

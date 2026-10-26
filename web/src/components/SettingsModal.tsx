@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { SessionEvent } from '../types';
+import type { EventCategory, EventParty, SessionEvent, SessionSummary } from '../types';
 import { Modal } from './Modal';
 import { relativeTime } from './Sidebar';
 import { Badge, Button, Field, SectionHeader, Segmented, Spinner } from '../ui';
@@ -58,54 +58,127 @@ const KIND_LABEL: Record<SessionEvent['kind'], string> = {
   'message.sent': 'Message',
   'message.refused': 'Message',
   'message.received': 'Received',
+  'agent.started': 'Agent started',
   'agent.stopped': 'Agent stopped',
+  'agent.failed': 'Agent failed to start',
+  'agent.exited': 'Agent exited',
+  'session.created': 'Session created',
+  'session.deleted': 'Session deleted',
+  'setting.changed': 'Setting changed',
 };
 
+const FAILED = new Set<SessionEvent['kind']>(['message.refused', 'agent.failed', 'agent.exited']);
 const DELIVERY_LABEL = { sent: 'sent', queued: 'queued behind a turn', started: 'started its agent' } as const;
 
-/** Messages between sessions and agents CodePit stopped, newest first. */
-const EventLog: React.FC<{ onSelectSession: (id: string) => void }> = ({ onSelectSession }) => {
+type CategoryFilter = 'all' | EventCategory;
+const CATEGORY_OPTIONS: Array<{ value: CategoryFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'messages', label: 'Messages' },
+  { value: 'agents', label: 'Agents' },
+  { value: 'sessions', label: 'Sessions & settings' },
+];
+const DAY_OPTIONS = [
+  { value: '1', label: 'Today' },
+  { value: '7', label: '7 days' },
+  { value: '30', label: '30 days' },
+  { value: '60', label: '60 days' },
+];
+
+const settingValue = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v));
+
+/** Older events (before reasons were words): idle and user stops. */
+const reasonText = (e: SessionEvent) =>
+  e.reason === 'idle' ? `Unused for ${hoursLabel(e.idleHours ?? 0)}` : e.reason === 'user' ? 'Stopped by you' : e.reason;
+
+/** Sessions, their agents and the messages between them, newest first. */
+const EventLog: React.FC<{ sessions: SessionSummary[]; onSelectSession: (id: string) => void }> = ({ sessions, onSelectSession }) => {
+  const [category, setCategory] = useState<CategoryFilter>('all');
+  const [days, setDays] = useState('7');
+  const [sessionId, setSessionId] = useState('');
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
-  const [file, setFile] = useState('');
+  const [info, setInfo] = useState<{ location: string; keptDays: number; compressedAfterDays: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.getEvents({ limit: 100 });
+      const r = await api.getEvents({ limit: 500, days: Number(days), sessionId: sessionId || undefined, categories: category === 'all' ? undefined : [category] });
       setEvents(r.events);
-      setFile(r.file);
+      setInfo({ location: r.location, keptDays: r.keptDays, compressedAfterDays: r.compressedAfterDays });
     } catch (err: any) {
       setError(err?.message || String(err));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [category, days, sessionId]);
   useEffect(() => {
     load();
   }, [load]);
 
-  const party = (p: SessionEvent['from']) =>
-    !p ? null : p.sessionId ? (
+  const party = (p: EventParty | undefined) =>
+    !p ? null : p.sessionId && sessions.some((s) => s.id === p.sessionId) ? (
       <button type="button" className="mcp-linkbtn" onClick={() => onSelectSession(p.sessionId!)}>
         {p.title ?? p.name ?? p.sessionId}
       </button>
     ) : (
-      <code>{p.name ?? 'unknown'}</code>
+      <code>{p.title ?? p.name ?? p.sessionId ?? 'unknown'}</code>
     );
+
+  const detail = (e: SessionEvent) => {
+    if (e.kind.startsWith('message.')) {
+      return (
+        <>
+          {party(e.from)} → {party(e.to)}
+          {e.delivery && <span className="cpm-hint">{DELIVERY_LABEL[e.delivery]}</span>}
+        </>
+      );
+    }
+    if (e.kind === 'setting.changed' && e.setting) {
+      return (
+        <span className="cpm-hint">
+          {e.setting.name}: {settingValue(e.setting.from)} → {settingValue(e.setting.to)}
+        </span>
+      );
+    }
+    return (
+      <>
+        {party(e.session ?? e.to)}
+        {reasonText(e) && <span className="cpm-hint">{reasonText(e)}</span>}
+        {e.kind === 'agent.started' && e.resumed && <span className="cpm-hint">(continued its conversation)</span>}
+      </>
+    );
+  };
 
   return (
     <section>
       <SectionHeader
         title="Event log"
-        description={file && <span className="mono cpm-path">{file}</span>}
+        description={
+          info && (
+            <span>
+              Kept {info.keptDays} days, compressed after {info.compressedAfterDays}. <span className="mono cpm-path">{info.location}</span>
+            </span>
+          )
+        }
         actions={
           <Button size="sm" variant="ghost" icon="refresh" onClick={load} loading={busy}>
             Refresh
           </Button>
         }
       />
+      <div className="settings-event-filters">
+        <Segmented<CategoryFilter> size="sm" label="Kind of event" value={category} onChange={setCategory} options={CATEGORY_OPTIONS} />
+        <Segmented<string> size="sm" label="How far back" value={days} onChange={setDays} options={DAY_OPTIONS} />
+        <select className="ui-input settings-event-session" aria-label="Session" value={sessionId} onChange={(ev) => setSessionId(ev.target.value)}>
+          <option value="">All sessions</option>
+          {sessions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.title}
+            </option>
+          ))}
+        </select>
+      </div>
       {error ? (
         <div className="acct-inline-error">{error}</div>
       ) : !events ? (
@@ -113,30 +186,20 @@ const EventLog: React.FC<{ onSelectSession: (id: string) => void }> = ({ onSelec
           <Spinner size={14} /> Loading…
         </div>
       ) : events.length === 0 ? (
-        <p className="cpm-hint">No messages between sessions or stopped agents yet.</p>
+        <p className="cpm-hint">Nothing logged for these filters.</p>
       ) : (
         <ul className="cpm-audit">
           {events.map((e, i) => (
-            <li key={`${e.at}-${i}`} className={`cpm-audit-row ${e.kind === 'message.refused' ? 'is-refused' : ''}`}>
+            <li key={`${e.at}-${i}`} className={`cpm-audit-row ${FAILED.has(e.kind) ? 'is-refused' : ''}`}>
               <span className="cpm-audit-time" title={new Date(e.at).toLocaleString()}>
                 {relativeTime(Date.parse(e.at))}
               </span>
               <span className="cpm-audit-main">
                 <span className="cpm-audit-top">
-                  <code>{KIND_LABEL[e.kind]}</code>
+                  <code>{KIND_LABEL[e.kind] ?? e.kind}</code>
                   {e.via && <Badge tone="neutral">{e.via === 'claude' ? 'SendMessage' : 'send_to_session'}</Badge>}
                   {e.kind === 'message.refused' && <Badge tone="danger">Failed</Badge>}
-                  {e.kind === 'agent.stopped' ? (
-                    <>
-                      {party(e.to)}
-                      <span className="cpm-hint">{e.reason === 'idle' ? `unused for ${hoursLabel(e.idleHours ?? 0)}` : 'by you'}</span>
-                    </>
-                  ) : (
-                    <>
-                      {party(e.from)} → {party(e.to)}
-                      {e.delivery && <span className="cpm-hint">{DELIVERY_LABEL[e.delivery]}</span>}
-                    </>
-                  )}
+                  {detail(e)}
                 </span>
                 {e.error && <span className="cpm-audit-error">{e.error}</span>}
                 {e.preview && <span className="cpm-hint">{e.preview}</span>}
@@ -149,9 +212,13 @@ const EventLog: React.FC<{ onSelectSession: (id: string) => void }> = ({ onSelec
   );
 };
 
-export const SettingsModal: React.FC<{ onClose: () => void; onSelectSession: (id: string) => void }> = ({ onClose, onSelectSession }) => (
-  <Modal onClose={onClose} heading="Settings" icon="settings" description="Applies to every session." size="md">
+export const SettingsModal: React.FC<{ sessions: SessionSummary[]; onClose: () => void; onSelectSession: (id: string) => void }> = ({
+  sessions,
+  onClose,
+  onSelectSession,
+}) => (
+  <Modal onClose={onClose} heading="Settings" icon="settings" description="Applies to every session." size="lg">
     <IdleStopSetting />
-    <EventLog onSelectSession={onSelectSession} />
+    <EventLog sessions={sessions} onSelectSession={onSelectSession} />
   </Modal>
 );

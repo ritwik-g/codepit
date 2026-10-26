@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { DEFAULT_CODEPIT_MCP, parseCodepitMcpSettings, readCodepitMcpSettings, writeCodepitMcpSettings } from './settings.js';
 import { auditLogFile, readAudit } from './audit.js';
+import { logSettingChange } from '../../event-log.js';
 import { codepitMcpEndpoint } from './access.js';
 import { listTools } from './tools.js';
 
@@ -23,8 +24,10 @@ codepitMcpRouter.put('/', (req, res) => {
     res.status(400).json({ error: next });
     return;
   }
+  const before = readCodepitMcpSettings();
   try {
     writeCodepitMcpSettings(next);
+    for (const key of Object.keys(next) as Array<keyof typeof next>) logSettingChange(`CodePit MCP server: ${key}`, before[key], next[key]);
   } catch (err: any) {
     res.status(500).json({ error: `Could not save the settings: ${err.message}` });
     return;

@@ -1,6 +1,7 @@
 import type {
   CodepitAuditEntry,
   SessionEvent,
+  EventCategory,
   CodepitMcpSettings,
   CodepitMcpView,
   ContextSentRecord,
@@ -185,10 +186,13 @@ export const api = {
   cancelScheduledResume: (id: string) =>
     request<{ scheduledResume: null }>(`/api/sessions/${id}/scheduled-resume`, { method: 'DELETE' }),
   resumeNow: (id: string) => request<{ ok: boolean }>(`/api/sessions/${id}/scheduled-resume/now`, { method: 'POST' }),
-  getEvents: (opts: { sessionId?: string; limit?: number } = {}) =>
-    request<{ events: SessionEvent[]; file: string }>(
-      `/api/events?limit=${opts.limit ?? 200}${opts.sessionId ? `&sessionId=${encodeURIComponent(opts.sessionId)}` : ''}`
-    ),
+  getEvents: (opts: { sessionId?: string; limit?: number; categories?: EventCategory[]; days?: number } = {}) => {
+    const q = new URLSearchParams({ limit: String(opts.limit ?? 200) });
+    if (opts.sessionId) q.set('sessionId', opts.sessionId);
+    if (opts.categories?.length) q.set('categories', opts.categories.join(','));
+    if (opts.days) q.set('days', String(opts.days));
+    return request<{ events: SessionEvent[]; location: string; keptDays: number; compressedAfterDays: number }>(`/api/events?${q}`);
+  },
   getIdleStop: () => request<{ hours: number; choices: number[] }>('/api/settings/idle-stop'),
   setIdleStop: (hours: number) =>
     request<{ hours: number; choices: number[] }>('/api/settings/idle-stop', { method: 'PUT', body: JSON.stringify({ hours }) }),

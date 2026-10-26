@@ -24,7 +24,7 @@ import { AUTO_EFFORT } from '../types.js';
 import type { SpawnedBy } from '../types.js';
 import { revokeToken } from '../mcp/codepit/access.js';
 import { claudeSessionName, sessionsByClaudeName } from '../mcp/codepit/claude-names.js';
-import { logEvent, preview } from '../event-log.js';
+import { logEvent, preview, type EventParty } from '../event-log.js';
 import type { AcpSession, ContextSentRecord, PendingContext, LimitHit, LimitResumeMode, RestoreOffer, ParkedAgentResume, AgentCommand, TaskAudit, AutoCompactSetting, CompactionRecord, AgentOptions, AgentTask, AgentTaskTextDelta, AsyncTaskUpdate, QueuedPrompt, ContextTransferMode, ElicitationAction, ElicitationRecord, FileAttachment, PendingElicitation, PendingPermission, PlanEntry, SessionSummary, ThinkingEffort, TokenUsage, ToolCallRecord, TurnMessage, UserAnnotations } from '../types.js';
 
 /**
@@ -251,6 +251,8 @@ export class SessionManager extends EventEmitter {
   private rejectedLimits = new Map<string, RejectedLimit>();
   /** A turn the agent started itself is checked for a limit notice once its text goes quiet. */
   private limitNoticeTimers = new Map<string, NodeJS.Timeout>();
+  /** Why the session's agent is about to start, when not a message from the user; read by its next start. */
+  private startReasons = new Map<string, string>();
   /** Why each due resume was last held back, so the log says it once rather than every tick. */
   private resumeHeldBack = new Map<string, string>();
 
@@ -274,8 +276,12 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Shut down the session's agent (running or still starting) and drop turn ownership. */
-  private dropHost(sessionId: string, reason = 'Stopped', opts: { appQuit?: boolean } = {}): void {
+  private dropHost(sessionId: string, reason = 'Stopped', opts: { appQuit?: boolean; idleHours?: number } = {}): void {
     const running = this.activeHosts.get(sessionId);
+    if (running || this.startingHosts.has(sessionId)) {
+      const s = store.get(sessionId);
+      logEvent({ kind: 'agent.stopped', session: eventParty(s, sessionId), agentId: s?.agentId, reason, ...(opts.idleHours !== undefined ? { idleHours: opts.idleHours } : {}) });
+    }
     if (running?.sessionId) this.endAgentSession(sessionId, running.sessionId, reason);
     const run = this.compactionRuns.get(sessionId);
     if (run) this.finishCompaction(sessionId, run, { stopReason: 'cancelled' });
@@ -787,11 +793,12 @@ export class SessionManager extends EventEmitter {
 
     store.save(session);
     this.emit('sessionsUpdated', this.listSessions());
+    logEvent({ kind: 'session.created', session: eventParty(session), agentId: session.agentId, reason: opts.spawnedBy ? `Started by the session "${store.get(opts.spawnedBy.sessionId)?.title ?? opts.spawnedBy.sessionId}"` : 'Created by you' });
     if (session.pendingStart) return session;
 
     // Spin up host; a session whose agent never started is removed rather than left as a zombie
     try {
-      await this.ensureHost(session);
+      await this.ensureHost(session, { reason: 'Session created' });
     } catch (err) {
       this.dropHost(id);
       store.delete(id);
@@ -815,26 +822,30 @@ export class SessionManager extends EventEmitter {
    * the next prompt hands it the conversation (contextHandoffPending). `beforeTurnId` places
    * the note about how it started before that turn (the prompt that caused the start).
    */
-  private async ensureHost(session: AcpSession, opts: { beforeTurnId?: string } = {}): Promise<AcpClientHost> {
+  private async ensureHost(session: AcpSession, opts: { beforeTurnId?: string; reason?: string } = {}): Promise<AcpClientHost> {
     const existing = this.activeHosts.get(session.id);
     if (existing) return existing;
     const starting = this.startingHosts.get(session.id);
     if (starting) return starting.promise;
+    const reason = opts.reason ?? this.startReasons.get(session.id) ?? 'A message was sent';
+    this.startReasons.delete(session.id);
 
     const host = this.createHost(session);
     host.resumeSessionId = resumableSessionId(session) ?? adoptClaudeSession(session, opts.beforeTurnId);
     const promise = (async () => {
       try {
         await host.start();
-      } catch (err) {
+      } catch (err: any) {
         // Kill whatever start() managed to spawn so a failed start never leaks a process
         host.shutdown();
+        logEvent({ kind: 'agent.failed', session: eventParty(store.get(session.id) ?? session), agentId: session.agentId, reason, error: err?.message || String(err) });
         throw err;
       } finally {
         if (this.startingHosts.get(session.id)?.host === host) this.startingHosts.delete(session.id);
       }
       if (host.isShutdown) throw new Error('Agent was stopped while starting');
       this.activeHosts.set(session.id, host);
+      logEvent({ kind: 'agent.started', session: eventParty(store.get(session.id) ?? session), agentId: session.agentId, reason, resumed: host.resumed });
       // Claude's adapter leaves messages from other sessions out of its feed; its transcript has them
       if (session.agentId === 'claude' && host.sessionId) {
         watchPeerMessages(
@@ -1308,6 +1319,7 @@ export class SessionManager extends EventEmitter {
       if (this.activeHosts.get(session.id) !== host) return;
       if (host.sessionId) this.endAgentSession(session.id, host.sessionId, 'The agent process exited');
       this.activeHosts.delete(session.id);
+      logEvent({ kind: 'agent.exited', session: eventParty(store.get(session.id), session.id), agentId: session.agentId, reason: 'The agent process exited on its own' });
       // It exited by itself while CodePit was up: it was not running at shutdown
       this.clearLiveMark(session.id);
       this.activePrompts.delete(session.id);
@@ -1474,10 +1486,11 @@ export class SessionManager extends EventEmitter {
    * A queue paused by a stopped or failed turn (or a server restart) does not hold a new message
    * back: it goes out now, and the paused queue follows once that turn ends cleanly.
    */
-  async queuePrompt(sessionId: string, text: string, attachments?: FileAttachment[]): Promise<{ queued: boolean }> {
+  async queuePrompt(sessionId: string, text: string, attachments?: FileAttachment[], opts: { startReason?: string } = {}): Promise<{ queued: boolean }> {
     const session = store.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
     if (!this.isTurnInFlight(sessionId)) {
+      if (opts.startReason && !this.isAgentRunning(sessionId)) this.startReasons.set(sessionId, opts.startReason);
       this.runPrompt(sessionId, text, attachments);
       return { queued: false };
     }
@@ -1894,6 +1907,7 @@ export class SessionManager extends EventEmitter {
     });
     store.save(s, { touch: false });
     // sendPrompt records the message before it first waits, so the refetch below finds it
+    if (!this.isAgentRunning(sessionId)) this.startReasons.set(sessionId, resume.reason === 'limit' ? 'Resumed after the usage limit reset' : 'Resumed at the time you picked');
     this.runPrompt(sessionId, resume.prompt);
     this.emit('sessionStream', { sessionId, type: 'resumed' });
     return true;
@@ -2106,10 +2120,7 @@ export class SessionManager extends EventEmitter {
     // Read while Claude still lists it: once stopped, this is how the session is found by name
     const name = claudeSessionName(session.agentSessionId);
     if (name) session.lastAgentSessionName = name;
-    if (host) {
-      logEvent({ kind: 'agent.stopped', to: { sessionId, title: session.title, name: session.lastAgentSessionName }, reason: idle ? 'idle' : 'user', ...(idle ? { idleHours: opts.idleHours } : {}) });
-    }
-    this.dropHost(sessionId, idle ? 'Stopped after going unused' : 'Stopped');
+    this.dropHost(sessionId, idle ? `Unused for ${idleLabel(opts.idleHours!)}` : 'Stopped by you', { idleHours: opts.idleHours });
     ptyManager.release(`session-term-${sessionId}`);
 
     // Only a Stop the user made parks the session; an idle one keeps its place in the list
@@ -2172,11 +2183,11 @@ export class SessionManager extends EventEmitter {
   /**
    * Start / Resume the underlying agent subprocess for a session.
    */
-  async startSessionAgent(sessionId: string, opts: { note?: string } = {}): Promise<AcpSession> {
+  async startSessionAgent(sessionId: string, opts: { note?: string; reason?: string } = {}): Promise<AcpSession> {
     const session = store.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
 
-    await this.ensureHost(session);
+    await this.ensureHost(session, { reason: opts.reason ?? 'Started by you' });
     session.isAgentRunning = true;
     session.agentStopped = false;
     if (session.state === 'parked') {
@@ -2268,7 +2279,7 @@ export class SessionManager extends EventEmitter {
         : '',
     ].filter(Boolean).join(' ');
     try {
-      const started = await this.startSessionAgent(sessionId, { note });
+      const started = await this.startSessionAgent(sessionId, { note, reason: 'Restored after CodePit restarted' });
       if (carryOn && !this.isTurnInFlight(sessionId)) this.runPrompt(sessionId, restorePrompt(offer));
       return started;
     } catch (err: any) {
@@ -2721,7 +2732,7 @@ export class SessionManager extends EventEmitter {
     ptyManager.release(`session-term-${sessionId}`);
     let failure: string | undefined;
     try {
-      await this.ensureHost(session);
+      await this.ensureHost(session, { reason: label });
     } catch (err: any) {
       failure = err?.message || String(err);
     }
@@ -2814,7 +2825,7 @@ export class SessionManager extends EventEmitter {
     try {
       const session = store.get(sessionId);
       if (!session) return;
-      const host = await this.ensureHost(session);
+      const host = await this.ensureHost(session, { reason: 'Compacting the conversation' });
       if (this.compactionRuns.get(sessionId) !== run) return;
       // A new agent session has none of the conversation; a continued one has all of it
       const needsHistory = Boolean(store.get(sessionId)?.contextHandoffPending);
@@ -3211,7 +3222,9 @@ export class SessionManager extends EventEmitter {
   }
 
   deleteSession(sessionId: string): boolean {
+    const deleting = store.get(sessionId);
     this.dropHost(sessionId, 'Session deleted');
+    if (deleting) logEvent({ kind: 'session.deleted', session: eventParty(deleting), agentId: deleting.agentId });
     revokeToken(sessionId);
     ptyManager.release(`session-term-${sessionId}`);
     const res = store.delete(sessionId);
@@ -3395,6 +3408,12 @@ function findToolCall(s: AcpSession, toolCallId: string): { turn: TurnMessage; c
     if (call) return { turn, call };
   }
   return null;
+}
+
+/** A session as the event log names it; the id alone when it is gone. */
+function eventParty(s: AcpSession | null | undefined, id?: string): EventParty {
+  if (!s) return { sessionId: id };
+  return { sessionId: s.id, title: s.title, name: claudeSessionName(s.agentSessionId) ?? s.lastAgentSessionName };
 }
 
 /** The CodePit session Claude knows by `name`, when that is clear. */

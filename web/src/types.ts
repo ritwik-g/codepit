@@ -442,18 +442,40 @@ export interface CodepitAuditEntry {
   ms?: number;
 }
 
-/** One entry of CodePit's event log: a message between sessions, or an agent stopped. */
+export type EventCategory = 'messages' | 'agents' | 'sessions';
+
+export interface EventParty {
+  sessionId?: string;
+  title?: string;
+  name?: string;
+}
+
+/** One entry of CodePit's event log. */
 export interface SessionEvent {
   at: string;
-  kind: 'message.sent' | 'message.refused' | 'message.received' | 'agent.stopped';
+  kind:
+    | 'message.sent'
+    | 'message.refused'
+    | 'message.received'
+    | 'agent.started'
+    | 'agent.stopped'
+    | 'agent.failed'
+    | 'agent.exited'
+    | 'session.created'
+    | 'session.deleted'
+    | 'setting.changed';
+  session?: EventParty;
   via?: 'codepit' | 'claude';
-  from?: { sessionId?: string; title?: string; name?: string };
-  to?: { sessionId?: string; title?: string; name?: string };
+  from?: EventParty;
+  to?: EventParty;
   delivery?: 'sent' | 'queued' | 'started';
+  reason?: string;
+  idleHours?: number;
+  agentId?: string;
+  resumed?: boolean;
+  setting?: { name: string; from: unknown; to: unknown };
   error?: string;
   preview?: string;
-  reason?: 'idle' | 'user';
-  idleHours?: number;
   sessions: string[];
 }
 

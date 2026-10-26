@@ -109,12 +109,14 @@ async function main(): Promise<void> {
   check('the transcript says why', note.role === 'system' && /after 2 days without use/.test(note.content ?? ''), note.content);
 
   const stopEvent = readEvents({ sessionId: old }).find((e) => e.kind === 'agent.stopped');
-  check('the event log records it', stopEvent?.reason === 'idle' && stopEvent.idleHours === 48, stopEvent);
+  check('the event log records it', stopEvent?.reason === 'Unused for 2 days' && stopEvent.idleHours === 48, stopEvent);
 
   console.log('3. The next message starts it again');
   await sessionManager.sendPrompt(old, 'back again');
   await waitForIdle(old);
   check('the agent runs again', running(old));
+  const restart = readEvents({ sessionId: old }).find((e) => e.kind === 'agent.started');
+  check('the restart is logged, continuing the conversation', restart?.reason === 'A message was sent' && restart.resumed === true, restart);
   check('and the reply came back', store.get(old)!.turns.some((t) => t.role === 'agent' && t.timestamp > note.timestamp));
 
   console.log('4. A few per poll');
@@ -144,6 +146,7 @@ async function main(): Promise<void> {
     check('PUT a string is 400', (await call('PUT', '/settings/idle-stop', { hours: '24' })).status === 400);
     const put = await call('PUT', '/settings/idle-stop', { hours: 24 });
     check('PUT the setting', put.status === 200 && put.body.hours === 24 && readIdleStopHours() === 24, put);
+    check('the change is logged', readEvents({ limit: 5 }).some((e) => e.kind === 'setting.changed' && e.setting?.from === 48 && e.setting.to === 24));
     check('PUT Never', (await call('PUT', '/settings/idle-stop', { hours: 0 })).body.hours === 0 && readIdleStopHours() === 0);
   } finally {
     server.close();

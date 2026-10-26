@@ -11,7 +11,8 @@ import { AgentNotRunningError, ElicitationAnswerError, InvalidOptionError, Nothi
 import { parseAutoCompact } from './compaction.js';
 import { isLimitResumeMode, parseScheduleRequest, readLimitResumeMode } from './limit-resume.js';
 import { IDLE_STOP_CHOICES, isIdleStopHours, readIdleStopHours } from './idle-stop.js';
-import { eventLogFile, readEvents } from './event-log.js';
+import { EVENT_CATEGORIES, eventLogLocation, logSettingChange, readEvents, type EventCategory } from './event-log.js';
+import { COMPRESS_AFTER_DAYS, DELETE_AFTER_DAYS } from './daily-log.js';
 import { TurnInFlightError } from './acp/client-host.js';
 import { searchTranscripts } from './search.js';
 import { getGitInfo } from './git.js';
@@ -114,6 +115,7 @@ apiRouter.put('/settings/limit-resume', (req: Request, res: Response) => {
     res.status(400).json({ error: "mode must be 'off', 'ask' or 'auto'" });
     return;
   }
+  logSettingChange('When Claude hits a usage limit', readLimitResumeMode(), mode);
   res.json({ mode: sessionManager.setLimitResumeMode(mode) });
 });
 
@@ -128,14 +130,24 @@ apiRouter.put('/settings/idle-stop', (req: Request, res: Response) => {
     res.status(400).json({ error: `hours must be one of ${IDLE_STOP_CHOICES.join(', ')}` });
     return;
   }
+  logSettingChange('Stop agents left unused for (hours)', readIdleStopHours(), hours);
   res.json({ hours: sessionManager.setIdleStopHours(hours), choices: IDLE_STOP_CHOICES });
 });
 
-// What sessions did to each other (messages) and agents CodePit stopped, newest first
+// The event log, newest first: ?categories=messages,agents,sessions &sessionId= &days= &limit=
 apiRouter.get('/events', (req: Request, res: Response) => {
   const limit = Number(req.query.limit) || undefined;
   const sessionId = typeof req.query.sessionId === 'string' && req.query.sessionId ? req.query.sessionId : undefined;
-  res.json({ events: readEvents({ limit, sessionId }), file: eventLogFile() });
+  const days = Number(req.query.days);
+  const categories = typeof req.query.categories === 'string' && req.query.categories
+    ? req.query.categories.split(',').filter((c): c is EventCategory => EVENT_CATEGORIES.includes(c as EventCategory))
+    : undefined;
+  res.json({
+    events: readEvents({ limit, sessionId, categories, sinceDays: days > 0 ? Math.min(days, DELETE_AFTER_DAYS) : undefined }),
+    location: eventLogLocation(),
+    keptDays: DELETE_AFTER_DAYS,
+    compressedAfterDays: COMPRESS_AFTER_DAYS,
+  });
 });
 
 // 2. List attention-ranked sessions
@@ -991,7 +1003,9 @@ apiRouter.post('/network/lan', async (req: Request, res: Response) => {
     return;
   }
   try {
+    const was = lanAccess.status().enabled;
     await lanAccess.setEnabled(enabled);
+    logSettingChange('LAN access', was, enabled);
     // Devices waiting to pair had no answer; with LAN off they could not use one anyway
     if (!enabled) devices.cancelPairing();
     res.json(await networkInfo(req));

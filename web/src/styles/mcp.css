@@ -782,3 +782,18 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Settings → Event log: kind, period and session filters */
+.settings-event-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.settings-event-session {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 320px;
+}

@@ -238,10 +238,15 @@ async function main(): Promise<void> {
     check('a received message is logged with its sender', events.some((e) => e.kind === 'message.received' && e.to?.sessionId === parent.id && e.from?.sessionId === off.id && e.preview === 'reply from off'));
     check('a message that started an agent is logged', events.some((e) => e.kind === 'message.sent' && e.via === 'codepit' && e.delivery === 'started' && e.from?.sessionId === child.id && e.to?.sessionId === off.id && e.to?.name === 'off-7c' && e.preview === 'wake up and look'), events.slice(0, 5));
     check('a refused message is logged with why', events.some((e) => e.kind === 'message.refused' && /More than one/.test(e.error ?? '') && e.to?.name === 'off-7c'));
-    check('stopping an agent is logged', events.some((e) => e.kind === 'agent.stopped' && e.reason === 'user' && e.to?.sessionId === off.id));
+    check('stopping an agent is logged', events.some((e) => e.kind === 'agent.stopped' && e.reason === 'Stopped by you' && e.session?.sessionId === off.id));
+    check('the start a message caused is logged with who sent it', events.some((e) => e.kind === 'agent.started' && e.session?.sessionId === off.id && e.reason === `Message from the session "${child.title}"`), events.filter((e) => e.kind === 'agent.started').slice(0, 3));
+    check('a session another session started is logged as such', events.some((e) => e.kind === 'session.created' && e.session?.sessionId === child.id && /Started by the session/.test(e.reason ?? '')));
+    check('turning messaging on is logged', events.some((e) => e.kind === 'setting.changed' && e.setting?.name === 'CodePit MCP server: allowMessaging' && e.setting.from === false && e.setting.to === true));
+    const agentsOnly = await api('GET', '/events?categories=agents&days=1&limit=500');
+    check('filtered by category', agentsOnly.json.events.length > 0 && agentsOnly.json.events.every((e: any) => e.kind.startsWith('agent.')) && agentsOnly.json.keptDays === 60, agentsOnly.json.keptDays);
     const perOff = await api('GET', `/events?sessionId=${off.id}&limit=500`);
     check('events read per session over HTTP', perOff.json.events.length > 0 && perOff.json.events.every((e: any) => e.sessions.includes(off.id)), perOff.json);
-    check('owner-only event log', (fs.statSync(path.join(testAppDir, 'logs', 'events.jsonl')).mode & 0o777) === 0o600);
+    check('owner-only event log', (fs.statSync(path.join(testAppDir, 'logs', `events-${new Date().toISOString().slice(0, 10)}.jsonl`)).mode & 0o777) === 0o600);
 
     console.log('13. Turned off');
     await api('PUT', '/codepit-mcp', { enabled: false });
@@ -254,7 +259,7 @@ async function main(): Promise<void> {
     check('unauthorized requests recorded', audit.some((e) => !e.caller && e.error === 'Unknown or missing session token'));
     const perSession = await api('GET', `/codepit-mcp/audit?sessionId=${child.id}&limit=500`);
     check('filtered by session', perSession.json.entries.length > 0 && perSession.json.entries.every((e: any) => e.caller?.sessionId === child.id || e.sessions?.includes(child.id)));
-    const mode = fs.statSync(path.join(testAppDir, 'logs', 'codepit-mcp.jsonl')).mode & 0o777;
+    const mode = fs.statSync(path.join(testAppDir, 'logs', `codepit-mcp-${new Date().toISOString().slice(0, 10)}.jsonl`)).mode & 0o777;
     check('owner-only log', mode === 0o600, mode.toString(8));
 
     console.log('15. Deleting a session revokes its token');
