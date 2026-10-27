@@ -1251,6 +1251,8 @@ export function parseCompactionUpdate(update: any): CompactionEvent | null {
 const ASYNC_TASK_STATES = new Set(['running', 'completed', 'failed', 'stopped']);
 
 /** Decode an `async_task_spawned` / `_progress` / `_state_update` update. */
+const TASK_ID = /^[\w-]+$/;
+
 export function parseAsyncTaskUpdate(update: any): AsyncTaskUpdate | null {
   const kind =
     update?.sessionUpdate === 'async_task_spawned' ? 'spawned'
@@ -1258,6 +1260,10 @@ export function parseAsyncTaskUpdate(update: any): AsyncTaskUpdate | null {
     : update?.sessionUpdate === 'async_task_state_update' ? 'state'
     : null;
   if (!kind || typeof update.asyncTaskId !== 'string') return null;
+  // Claude's adapter takes a task id from its "running in background" notice found anywhere in
+  // a Bash result, so a command that only printed that notice (a grep of the adapter or a test
+  // agent) reads as a launch with an id like "${taskId}". Real ids are one token.
+  if (!TASK_ID.test(update.asyncTaskId)) return null;
   return {
     kind,
     asyncTaskId: update.asyncTaskId,

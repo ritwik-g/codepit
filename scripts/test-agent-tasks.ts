@@ -397,6 +397,13 @@ test('async_task updates carry type, description and usage', () => {
   assert.equal(spawned.usage, undefined);
   assert.equal(spawned.canStop, undefined);
   assert.equal(parseAsyncTaskUpdate({ sessionUpdate: 'async_task_spawned', asyncTaskId: 't3', canStop: true })!.canStop, true);
+  assert.equal(parseAsyncTaskUpdate({ sessionUpdate: 'async_task_spawned', asyncTaskId: 'exec-7e9eaf61-b757' })?.asyncTaskId, 'exec-7e9eaf61-b757');
+});
+
+test('a task id read out of printed text, not a launch, is ignored', () => {
+  for (const id of ['${taskId}', '";\n    const start = text', 'a b']) {
+    assert.equal(parseAsyncTaskUpdate({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, toolCallId: 'c1' }), null, id);
+  }
 });
 
 test('a Workflow call is a workflow task, named from its script, even with no async_task update', () => {

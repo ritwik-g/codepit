@@ -133,7 +133,8 @@ export function sessionVitals(s: SessionSummary, now: number): { context?: strin
     out.contextTone = pct >= 85 ? 'danger' : pct >= 65 ? 'warn' : 'neutral';
   }
   if (s.cacheExpiresAt) {
-    if (isWorking(s)) {
+    // Only a running turn keeps it warm: a background shell or subagent never touches this context
+    if (s.state === 'working') {
       out.cache = 'cache warm';
       out.cacheTone = 'neutral';
     } else {

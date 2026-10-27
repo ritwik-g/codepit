@@ -173,6 +173,8 @@ export function reconcileEffort(s: AcpSession, options: AgentOptions): TurnMessa
 
 // A 'working' turn with no agent, permission or terminal activity for this long is treated as hung
 const STALE_TURN_MS = 10 * 60_000;
+// Claude creates a background command's output file as it starts; allow for a slow start
+const VANISHED_TASK_GRACE_MS = 60_000;
 // How long "Send now" waits for a starting agent to begin the turn before stopping it instead
 const SEND_NOW_WAIT_MS = 60_000;
 
@@ -507,6 +509,11 @@ export class SessionManager extends EventEmitter {
         this.runDueResumes();
       } catch (err) {
         console.error('[session-mgr] Sending scheduled resumes failed:', err);
+      }
+      try {
+        this.endVanishedShellTasks();
+      } catch (err) {
+        console.error('[session-mgr] Checking background commands failed:', err);
       }
       try {
         await this.stopIdleAgents();
@@ -2051,9 +2058,15 @@ export class SessionManager extends EventEmitter {
     const stopped = await host.stopAsyncTask(task.asyncTaskId);
     if (!stopped) return false;
     // The agent reports the stop as an async_task update too; record it now in case that came first or never comes
+    this.endTaskHere(sessionId, taskId, 'Stopped from CodePit');
+    return true;
+  }
+
+  /** Record a running task as stopped, with its launching call, without asking the agent. */
+  private endTaskHere(sessionId: string, taskId: string, reason: string): boolean {
     const s = store.get(sessionId);
-    const ended = s && stopAgentTask(s, taskId, 'Stopped from CodePit');
-    if (!s || !ended) return true;
+    const ended = s && stopAgentTask(s, taskId, reason);
+    if (!s || !ended) return false;
     const owner = ended.toolCallId ? findToolCall(s, ended.toolCallId) : null;
     if (owner && owner.call.background && (!owner.call.backgroundState || owner.call.backgroundState === 'running')) {
       owner.call.backgroundState = 'stopped';
@@ -2064,6 +2077,34 @@ export class SessionManager extends EventEmitter {
     this.emit('sessionStream', { sessionId, type: 'backgroundUpdate', toolCall: owner?.call, turn: owner ? withoutToolCalls(owner.turn) : undefined, agentTasks: [ended] });
     this.recheckAutoCompact(sessionId);
     return true;
+  }
+
+  /**
+   * Claude writes a background command's output to <tmp>/claude-<uid>/<project>/<session>/tasks/<id>.output
+   * from the moment it starts until it is done. One shown as running with no such file is not
+   * running: either it never was (the adapter read an id out of text a command printed) or its
+   * end never reached CodePit. Either way it would show "Working in background" for good and
+   * keep the agent from being stopped when idle.
+   */
+  endVanishedShellTasks(now = Date.now()): string[] {
+    const ended: string[] = [];
+    for (const [sessionId, host] of this.activeHosts) {
+      const s = store.get(sessionId);
+      if (s?.agentId !== 'claude' || host.isShutdown) continue;
+      const stale = (s.agentTasks ?? []).filter(
+        (t) => t.status === 'running' && t.kind === 'background' && t.agentType === 'shell' && t.asyncTaskId && now - t.startedAt > VANISHED_TASK_GRACE_MS
+      );
+      if (stale.length === 0) continue;
+      const taskDirs = claudeTaskDirs(s.cwd);
+      // Not where this Claude keeps its tasks: nothing to go by
+      if (taskDirs.length === 0) continue;
+      for (const task of stale) {
+        if (taskDirs.some((d) => fs.existsSync(path.join(d, `${task.asyncTaskId}.output`)))) continue;
+        console.log(`[session-mgr] Task ${task.asyncTaskId} (${task.title}) on ${sessionId} has no output file; marking it stopped`);
+        if (this.endTaskHere(sessionId, task.id, 'Not running: Claude has no output for it')) ended.push(task.id);
+      }
+    }
+    return ended;
   }
 
   /**
@@ -4092,6 +4133,38 @@ function claudeProjectDirs(cwd: string): string[] {
     // folder gone; the recorded path is all there is
   }
   return [...new Set([real, cwd])].map((d) => path.join(claudeConfigDir(), 'projects', d.replace(/[^a-zA-Z0-9]/g, '-')));
+}
+
+/** Claude Code's folders of background command output for a cwd, those that exist: one per agent session. */
+function claudeTaskDirs(cwd: string): string[] {
+  let real = cwd;
+  try {
+    real = fs.realpathSync(cwd);
+  } catch {
+    // folder gone; the recorded path is all there is
+  }
+  let uid: number;
+  try {
+    uid = os.userInfo().uid;
+  } catch {
+    return [];
+  }
+  const root = path.join(process.env.CLAUDE_CODE_TMPDIR || '/tmp', `claude-${uid}`);
+  const dirs: string[] = [];
+  for (const d of new Set([real, cwd])) {
+    const project = path.join(root, d.replace(/[^a-zA-Z0-9]/g, '-'));
+    let sessions: string[];
+    try {
+      sessions = fs.readdirSync(project);
+    } catch {
+      continue;
+    }
+    for (const id of sessions) {
+      const tasks = path.join(project, id, 'tasks');
+      if (fs.existsSync(tasks)) dirs.push(tasks);
+    }
+  }
+  return dirs;
 }
 
 /** Where Claude Code keeps a session's transcript (it may not exist before the first prompt). */

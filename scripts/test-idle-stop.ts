@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
  * Stopping idle agents: an agent unused for the setting's hours is stopped, keeps its place
  * in the list and starts again on the next message; one in a turn, waiting on the user, with
  * a resume scheduled or used recently is left running; Never stops nothing; a reply the
- * agent starts on its own shows as working until its result; and the HTTP routes. Runs
- * against a scripted agent.
+ * agent starts on its own shows as working until its result; a background command with no
+ * output file is not running; and the HTTP routes. Runs against a scripted agent.
  */
 
 const testAppDir = path.join(os.tmpdir(), `codepit-idle-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
@@ -150,6 +150,27 @@ async function main(): Promise<void> {
   await sleep(10_500);
   check('still working after the poller has run', state(own) === 'working', state(own));
   check('back to idle when its result arrives', await waitFor(() => state(own) === 'needs_you', 5000), state(own));
+
+  console.log('4c. A background command Claude has no output file for is not running');
+  const tmp = path.join(testAppDir, 'claude-tmp');
+  process.env.CLAUDE_CODE_TMPDIR = tmp;
+  const bg = await newSession();
+  const sb = store.get(bg)!;
+  const task = (id: string, asyncTaskId: string, ageMs: number) =>
+    ({ id, kind: 'background', title: id, status: 'running', startedAt: Date.now() - ageMs, asyncTaskId, agentType: 'shell', canStop: true }) as any;
+  sb.agentId = 'claude';
+  sb.agentTasks = [task('real', 'breal0001', 5 * 60_000), task('false', '${taskId}', 5 * 60_000), task('young', 'byoung001', 5_000)];
+  store.save(sb, { touch: false });
+  check('nothing is ended without Claude\'s task folder to go by', sessionManager.endVanishedShellTasks().length === 0);
+  const tasksDir = path.join(tmp, `claude-${os.userInfo().uid}`, fs.realpathSync(sb.cwd).replace(/[^a-zA-Z0-9]/g, '-'), 'agent-session', 'tasks');
+  fs.mkdirSync(tasksDir, { recursive: true });
+  fs.writeFileSync(path.join(tasksDir, 'breal0001.output'), '');
+  const ended = sessionManager.endVanishedShellTasks();
+  const statusOf = (id: string) => store.get(bg)!.agentTasks!.find((t) => t.id === id)?.status;
+  check('the one with no output file is stopped', JSON.stringify(ended) === '["false"]' && statusOf('false') === 'stopped', ended);
+  check('the one with its file runs on', statusOf('real') === 'running');
+  check('one just started is given time', statusOf('young') === 'running');
+  delete process.env.CLAUDE_CODE_TMPDIR;
 
   console.log('5. HTTP routes');
   const app = express();
