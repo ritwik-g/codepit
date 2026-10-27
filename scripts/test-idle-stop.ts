@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url';
 /**
  * Stopping idle agents: an agent unused for the setting's hours is stopped, keeps its place
  * in the list and starts again on the next message; one in a turn, waiting on the user, with
- * a resume scheduled or used recently is left running; Never stops nothing; and the HTTP
- * routes. Runs against a scripted agent.
+ * a resume scheduled or used recently is left running; Never stops nothing; a reply the
+ * agent starts on its own shows as working until its result; and the HTTP routes. Runs
+ * against a scripted agent.
  */
 
 const testAppDir = path.join(os.tmpdir(), `codepit-idle-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
@@ -61,6 +62,15 @@ async function waitForIdle(id: string, timeoutMs = 20_000): Promise<void> {
     if (Date.now() - start > timeoutMs) throw new Error(`Timed out waiting for session ${id} to go idle`);
     await sleep(50);
   }
+}
+
+async function waitFor(cond: () => boolean, timeoutMs = 10_000): Promise<boolean> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) return false;
+    await sleep(50);
+  }
+  return true;
 }
 
 async function newSession(): Promise<string> {
@@ -127,6 +137,19 @@ async function main(): Promise<void> {
   check(`at most ${IDLE_STOPS_PER_TICK} per poll`, firstTick.length === IDLE_STOPS_PER_TICK, firstTick);
   const secondTick = await sessionManager.stopIdleAgents(Date.now(), 48);
   check('the rest on the next poll', firstTick.length + secondTick.length === 5, secondTick);
+
+  console.log('4b. A reply the agent starts on its own');
+  const own = await newSession();
+  await sessionManager.sendPrompt(own, 'own-turn:12000');
+  await waitForIdle(own);
+  const state = (id: string) => sessionManager.listSessions().find((x) => x.id === id)?.state;
+  const lastAgent = () => [...store.get(own)!.turns].reverse().find((t) => t.role === 'agent');
+  check('shows as working while it answers', await waitFor(() => state(own) === 'working', 3000), state(own));
+  check('its text is shown as it comes', lastAgent()?.content === 'answering on my own', lastAgent()?.content);
+  // The poller runs every 10s: it must not close a reply that is still going
+  await sleep(10_500);
+  check('still working after the poller has run', state(own) === 'working', state(own));
+  check('back to idle when its result arrives', await waitFor(() => state(own) === 'needs_you', 5000), state(own));
 
   console.log('5. HTTP routes');
   const app = express();

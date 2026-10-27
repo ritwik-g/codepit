@@ -11,6 +11,10 @@ const MOCK_AGENT_PATH = path.join(__dirname, 'mock-agent.ts');
 const BIN_DIR = path.resolve(__dirname, '../../node_modules/.bin');
 const TSX_BIN = path.join(BIN_DIR, 'tsx');
 const CLAUDE_ACP_BIN = path.join(BIN_DIR, 'claude-agent-acp');
+// Runs the adapter so a session's output streams before its first prompt (see claude-acp.ts)
+const CLAUDE_ACP_WRAPPER = path.join(__dirname, 'claude-acp.ts');
+const CLAUDE_ACP_ENTRY = path.resolve(__dirname, '../../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js');
+const wrapClaudeAcp = fs.existsSync(CLAUDE_ACP_ENTRY) && fs.existsSync(TSX_BIN);
 const CODEX_ACP_BIN = path.join(BIN_DIR, 'codex-acp');
 
 const defaultClaudeModels = [
@@ -58,9 +62,13 @@ export const AGENT_REGISTRY: Record<string, AgentDescriptor> = {
     name: 'Claude Code',
     provider: 'anthropic',
     description: 'Anthropic Claude Code connected via Agent Client Protocol (uses Claude Max/Pro subscription)',
-    command: process.env.CLAUDE_ACP_CMD || (fs.existsSync(CLAUDE_ACP_BIN) ? CLAUDE_ACP_BIN : 'npx'),
+    command: process.env.CLAUDE_ACP_CMD || (wrapClaudeAcp ? TSX_BIN : fs.existsSync(CLAUDE_ACP_BIN) ? CLAUDE_ACP_BIN : 'npx'),
     args: process.env.CLAUDE_ACP_ARGS
       ? JSON.parse(process.env.CLAUDE_ACP_ARGS)
+      : process.env.CLAUDE_ACP_CMD
+      ? []
+      : wrapClaudeAcp
+      ? [CLAUDE_ACP_WRAPPER, CLAUDE_ACP_ENTRY]
       : fs.existsSync(CLAUDE_ACP_BIN)
       ? []
       : ['-y', '@agentclientprotocol/claude-agent-acp'],
@@ -190,7 +198,9 @@ export function useBundledAgentRuntime(rt: BundledAgentRuntime): void {
   const pkgEntry = (pkg: string) => path.join(rt.modulesDir, '@agentclientprotocol', pkg, 'dist', 'index.js');
   const envArgs = (v?: string): string[] => (v ? JSON.parse(v) : []);
 
-  if (!process.env.CLAUDE_ACP_CMD) viaApp(AGENT_REGISTRY.claude, pkgEntry('claude-agent-acp'), envArgs(process.env.CLAUDE_ACP_ARGS));
+  if (!process.env.CLAUDE_ACP_CMD) {
+    viaApp(AGENT_REGISTRY.claude, path.join(rt.scriptsDir, 'claude-acp.mjs'), [pkgEntry('claude-agent-acp'), ...envArgs(process.env.CLAUDE_ACP_ARGS)]);
+  }
   if (!process.env.CODEX_ACP_CMD) viaApp(AGENT_REGISTRY.codex, pkgEntry('codex-acp'), envArgs(process.env.CODEX_ACP_ARGS));
   viaApp(AGENT_REGISTRY.antigravity, path.join(rt.scriptsDir, 'antigravity-agent.mjs'));
   viaApp(AGENT_REGISTRY.mock, path.join(rt.scriptsDir, 'mock-agent.mjs'));

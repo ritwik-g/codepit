@@ -73,6 +73,9 @@ export class HostClosedError extends Error {
   }
 }
 
+// What starts the work in a reply Claude gives on its own (claude-agent-acp's AUTONOMOUS_RESULT_ORIGINS)
+const AGENT_STARTED_ORIGINS = new Set(['task-notification', 'peer', 'coordinator', 'observer', 'observer-activity']);
+
 // How long cancel() waits for the agent to wind the turn down before abandoning it
 const CANCEL_GRACE_MS = 5_000;
 
@@ -108,6 +111,8 @@ export interface ClientHostEvents {
   elicitationRequested: (elicitation: PendingElicitation) => void;
   elicitationResolved: (requestId: string, outcome: ElicitationOutcome) => void;
   turnCompleted: (stopReason: string) => void;
+  /** A reply the agent started on its own, not for a prompt, has ended. */
+  ownTurnEnded: () => void;
   promptSuggestion: (suggestion: string) => void;
   /** The agent named the conversation (ACP session_info_update.title); null clears its name. */
   agentTitle: (title: string | null) => void;
@@ -596,6 +601,10 @@ export class AcpClientHost extends EventEmitter {
           if (rateLimit) {
             this.emit('rateLimitUpdate', rateLimit);
           }
+          // Claude reports each result's cost with what started its work: one that ran on the
+          // agent's own (a message from another session, a background task's followup) has ended
+          const origin = (update._meta as any)?.['_claude/origin'];
+          if ((update as any).cost && AGENT_STARTED_ORIGINS.has(origin?.kind)) this.emit('ownTurnEnded');
           break;
         }
         case 'config_option_update': {

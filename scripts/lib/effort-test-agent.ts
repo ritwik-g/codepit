@@ -214,6 +214,18 @@ async function main() {
         await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: said[1] } });
         return { stopReason: 'end_turn' };
       }
+      // A reply the agent gives on its own after this turn, as Claude does to a message from
+      // another session: its text, then after <ms> the result's usage, which names its origin
+      const own = /own-turn:(\d+)/.exec(text);
+      if (own) {
+        setTimeout(() => {
+          void send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answering on my own' } });
+        }, 200);
+        setTimeout(() => {
+          void send({ sessionUpdate: 'usage_update', used: 2000, size: 200_000, cost: { amount: 0.01, currency: 'USD' }, _meta: { '_claude/origin': { kind: 'peer' } } });
+        }, Number(own[1]));
+        return { stopReason: 'end_turn' };
+      }
       const later = /later-limit:(.+)$/s.exec(text);
       if (later) {
         setTimeout(() => {

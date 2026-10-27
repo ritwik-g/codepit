@@ -44,6 +44,7 @@ await build({
   entryPoints: {
     'agent-launcher': 'server/agents/agent-launcher.ts',
     'antigravity-agent': 'server/agents/antigravity-agent.ts',
+    'claude-acp': 'server/agents/claude-acp.ts',
     'mock-agent': 'server/agents/mock-agent.ts',
   },
   outdir: 'dist-electron/agents',

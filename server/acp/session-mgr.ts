@@ -232,6 +232,8 @@ export class SessionManager extends EventEmitter {
   private startingHosts = new Map<string, { host: AcpClientHost; promise: Promise<AcpClientHost> }>();
   // sendPrompt ownership per session; a newer prompt, cancel or host teardown takes it away
   private activePrompts = new Map<string, number>();
+  // Sessions working on a reply their agent started on its own (a message from another session)
+  private ownTurns = new Set<string>();
   private promptSeq = 0;
   private pollTimer: NodeJS.Timeout | null = null;
   // A compaction in progress per session; the agent's output during it goes to the compaction, not the transcript
@@ -275,8 +277,23 @@ export class SessionManager extends EventEmitter {
     return this.activePrompts.has(sessionId) || Boolean(this.activeHosts.get(sessionId)?.isTurnInFlight);
   }
 
+  /**
+   * Output with no prompt of CodePit's in flight: the agent is answering on its own (a message
+   * from another session, a background task finishing), so the session shows as working until
+   * that reply's result arrives (ownTurnEnded) or it goes silent (the poller).
+   */
+  private noteOwnTurn(s: AcpSession): void {
+    if (this.isTurnInFlight(s.id) || this.compactionRuns.has(s.id)) return;
+    this.ownTurns.add(s.id);
+    if (s.state === 'working') return;
+    s.state = 'working';
+    store.save(s);
+    this.emit('sessionsUpdated', this.listSessions());
+  }
+
   /** Shut down the session's agent (running or still starting) and drop turn ownership. */
   private dropHost(sessionId: string, reason = 'Stopped', opts: { appQuit?: boolean; idleHours?: number } = {}): void {
+    this.ownTurns.delete(sessionId);
     const running = this.activeHosts.get(sessionId);
     if (running || this.startingHosts.has(sessionId)) {
       const s = store.get(sessionId);
@@ -508,7 +525,10 @@ export class SessionManager extends EventEmitter {
           continue;
         }
         if (session.state === 'working') {
-          if (!this.isTurnInFlight(session.id)) {
+          // A reply the agent started itself ends with its result; only one gone silent is closed here
+          const ownTurnLive = this.ownTurns.has(session.id) && host && Date.now() - host.lastActivityAt < STALE_TURN_MS;
+          if (!this.isTurnInFlight(session.id) && !ownTurnLive) {
+            this.ownTurns.delete(session.id);
             session.state = 'needs_you';
             changed = true;
             this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted' });
@@ -919,6 +939,7 @@ export class SessionManager extends EventEmitter {
         s.turns.push(activeAgentTurn);
       }
       activeAgentTurn.segments = activeAgentTurn.segments || [];
+      this.noteOwnTurn(s);
       return activeAgentTurn;
     };
 
@@ -1199,6 +1220,17 @@ export class SessionManager extends EventEmitter {
       this.emit('sessionsUpdated', this.listSessions());
     });
 
+    host.on('ownTurnEnded', () => {
+      const s = store.get(session.id);
+      if (!s || !this.ownTurns.delete(session.id) || this.isTurnInFlight(session.id)) return;
+      activeAgentTurn = null;
+      s.state = 'needs_you';
+      s.lastTurnEndedAt = Date.now();
+      store.save(s, { now: true });
+      this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted' });
+      this.emit('sessionsUpdated', this.listSessions());
+    });
+
     host.on('turnCompleted', () => {
       const s = store.get(session.id);
       if (!s) return;
@@ -1323,6 +1355,7 @@ export class SessionManager extends EventEmitter {
       // It exited by itself while CodePit was up: it was not running at shutdown
       this.clearLiveMark(session.id);
       this.activePrompts.delete(session.id);
+      this.ownTurns.delete(session.id);
       activeAgentTurn = null;
       this.settleAgentCompactions(session.id, 'Stopped when the agent exited');
       this.settleBackgroundWork(session.id, 'Stopped when the agent exited');
@@ -1346,6 +1379,7 @@ export class SessionManager extends EventEmitter {
     if (this.isTurnInFlight(sessionId)) throw new TurnInFlightError();
     const seq = ++this.promptSeq;
     this.activePrompts.set(sessionId, seq);
+    this.ownTurns.delete(sessionId);
     // This turn's own end decides about compaction now
     this.autoCompactAfterBackground.delete(sessionId);
     this.rejectedLimits.delete(sessionId);
