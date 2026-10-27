@@ -3,7 +3,8 @@ import { api } from '../api';
 import type { EventCategory, EventParty, SessionEvent, SessionSummary } from '../types';
 import { Modal } from './Modal';
 import { relativeTime } from './Sidebar';
-import { Badge, Button, Field, SectionHeader, Segmented, Spinner } from '../ui';
+import { Badge, Button, Field, SectionHeader, Segmented, Spinner, Switch } from '../ui';
+import { useComposerLayout, type ComposerPosition } from '../composerLayout';
 import '../styles/mcp.css';
 
 const hoursLabel = (h: number) => (h === 0 ? 'Never' : h % 24 === 0 ? `${h / 24} day${h === 24 ? '' : 's'}` : `${h}h`);
@@ -212,12 +213,41 @@ const EventLog: React.FC<{ sessions: SessionSummary[]; onSelectSession: (id: str
   );
 };
 
+/** Where the message box sits. On this device only; phones always keep it at the bottom. */
+const ComposerLayoutSetting: React.FC = () => {
+  const [layout, update] = useComposerLayout();
+  return (
+    <Field
+      label="Message box position"
+      hint="Top keeps typing and the start of each reply near eye level. Saved on this device; phones keep it at the bottom."
+    >
+      <Segmented<ComposerPosition>
+        size="sm"
+        label="Message box position"
+        value={layout.position}
+        onChange={(position) => update({ position })}
+        options={[
+          { value: 'bottom', label: 'Bottom' },
+          { value: 'top', label: 'Top' },
+        ]}
+      />
+      <Switch
+        checked={layout.compactWhenIdle}
+        onChange={(compactWhenIdle) => update({ compactWhenIdle })}
+        label="Shrink when not typing"
+        description="Collapses to one line until you click it or press i."
+      />
+    </Field>
+  );
+};
+
 export const SettingsModal: React.FC<{ sessions: SessionSummary[]; onClose: () => void; onSelectSession: (id: string) => void }> = ({
   sessions,
   onClose,
   onSelectSession,
 }) => (
   <Modal onClose={onClose} heading="Settings" icon="settings" description="Applies to every session." size="lg">
+    <ComposerLayoutSetting />
     <IdleStopSetting />
     <EventLog sessions={sessions} onSelectSession={onSelectSession} />
   </Modal>

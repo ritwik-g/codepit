@@ -469,6 +469,13 @@ export const App: React.FC = () => {
         annotate({ priority: nextPriority(activeSession.user.priority) }, 'priority');
       } else if (e.key === 'c' && selectedId && activeSession) {
         annotate({ cleanup: !activeSession.user.cleanup }, 'cleanup mark');
+      } else if (e.key === 'i') {
+        // Start typing in the open session's message box, wherever it sits
+        const box = document.querySelector<HTMLTextAreaElement>('.ws-textarea');
+        if (box && !box.disabled) {
+          e.preventDefault();
+          box.focus();
+        }
       }
     };
 

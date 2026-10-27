@@ -14,6 +14,8 @@ import { QueuedPrompts } from './QueuedPrompts';
 import { AutoCompactControl, isCompacting } from './CompactionCard';
 import { cx, formatBytes } from './sessionMeta';
 import { MOD_KEY } from './Sidebar';
+import { Menu } from './Menu';
+import { useComposerLayout } from '../composerLayout';
 
 // The textarea grows with its content up to this share of the viewport.
 const MAX_GROW = 0.4;
@@ -47,7 +49,9 @@ export const Composer: React.FC<{
   onOpenSwitchModal,
   above,
 }) => {
+  const [layout, setLayout] = useComposerLayout();
   const [sending, setSending] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   // Where the caret is, so the menu follows the word being typed rather than the start of the message
@@ -324,10 +328,21 @@ export const Composer: React.FC<{
   // Phones get a shorter placeholder so it fits on one line.
   const narrow = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 768px)').matches;
   const canSend = (promptText.trim().length > 0 || attachments.length > 0) && !sending;
+  const compact =
+    layout.compactWhenIdle && !focused && !promptText && attachments.length === 0 && !showSlashMenu && !showModelPicker && !isDraggingOver;
 
   return (
     // noValidate: the question card above checks its own fields, and a bad answer there must not block Send
-    <form className="ws-composer-dock" onSubmit={handleSendPrompt} noValidate>
+    <form
+      className={cx('ws-composer-dock', compact && 'is-compact')}
+      onSubmit={handleSendPrompt}
+      noValidate
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        // Moving between the textarea and the toolbar keeps it open
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
+    >
       <div className="ws-composer-column">
         {above}
         {session.queuedPrompts && session.queuedPrompts.length > 0 && (
@@ -359,6 +374,8 @@ export const Composer: React.FC<{
 
         <div
           className={cx('ws-composer', isDraggingOver && 'is-dragging')}
+          // A compact box opens on a click anywhere on it, not only on the one line of text
+          onClick={compact ? () => inputRef.current?.focus() : undefined}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
@@ -506,6 +523,27 @@ export const Composer: React.FC<{
               <span className="ws-composer-hint">
                 <Kbd>{MOD_KEY} Enter</Kbd> send <Kbd>Enter</Kbd> new line
               </span>
+              <Menu
+                label="Message box layout"
+                triggerIcon="settings"
+                size="sm"
+                triggerClassName="ws-layout-btn"
+                items={[
+                  // Phones always keep the box at the bottom, so only desktop offers the position
+                  ...(narrow
+                    ? []
+                    : [
+                        { label: 'Box at the top', icon: layout.position === 'top' ? ('check' as const) : undefined, onSelect: () => setLayout({ position: 'top' }) },
+                        { label: 'Box at the bottom', icon: layout.position === 'bottom' ? ('check' as const) : undefined, onSelect: () => setLayout({ position: 'bottom' }) },
+                        'divider' as const,
+                      ]),
+                  {
+                    label: 'Shrink when not typing',
+                    icon: layout.compactWhenIdle ? 'check' : undefined,
+                    onSelect: () => setLayout({ compactWhenIdle: !layout.compactWhenIdle }),
+                  },
+                ]}
+              />
               {working && (
                 <Button
                   variant="secondary"

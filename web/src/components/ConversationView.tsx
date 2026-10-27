@@ -12,6 +12,8 @@ import { cx, formatBytes, formatTime, runningSubagents } from './sessionMeta';
 const TURN_WINDOW = 120;
 // Within this distance of the bottom the view keeps following new output.
 const STICK_THRESHOLD = 120;
+// With the message box on top, a sent message settles this far below the top of the view.
+const ANCHOR_GAP = 16;
 
 export type RollbackAction = 'revert_to_this' | 'revert_before_this' | 'undo_last';
 
@@ -140,7 +142,7 @@ const UserTurn: React.FC<{
 }> = ({ turn, onRollback, onPreviewImage }) => {
   const reveal = useLongPressReveal();
   return (
-  <div className={cx('ws-turn ws-turn-user', reveal.open && 'actions-open')} {...reveal.props}>
+  <div className={cx('ws-turn ws-turn-user', reveal.open && 'actions-open')} data-turn-id={turn.id} {...reveal.props}>
     <div className="ws-user-meta">
       <span className="ws-turn-actions">
         <IconButton
@@ -254,7 +256,9 @@ export const ConversationView: React.FC<{
   onPreviewImage: (src: string) => void;
   onCancelPrompt: () => void;
   onInsertPrompt: (text: string) => void;
-}> = ({ session, onRollback, onPreviewImage, onCancelPrompt, onInsertPrompt }) => {
+  /** The message box sits above the conversation: each message you send starts at the top of the view. */
+  composerOnTop?: boolean;
+}> = ({ session, onRollback, onPreviewImage, onCancelPrompt, onInsertPrompt, composerOnTop = false }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Follow new output only while the reader is at the bottom; scrolling up to
   // read earlier turns must not be yanked back on every streamed chunk.
@@ -270,12 +274,54 @@ export const ConversationView: React.FC<{
   }, [session.id]);
   const hiddenTurnCount = showAllTurns ? 0 : Math.max(0, session.turns.length - TURN_WINDOW);
 
+  // With the box on top, reading starts where you typed: the message you just sent is pinned near
+  // the top and its reply fills in below it, instead of the view chasing the bottom. The tail spacer
+  // gives a short reply the room to sit there.
+  const tailRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<{ turnId: string; scroll: boolean } | null>(null);
+  const lastUserRef = useRef<{ sessionId: string; index: number }>({ sessionId: '', index: -1 });
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
+    const tail = tailRef.current;
+    if (!el || !tail) return;
+    let lastUserIndex = -1;
+    for (let i = session.turns.length - 1; i >= 0; i--) {
+      if (session.turns[i].role === 'user') {
+        lastUserIndex = i;
+        break;
+      }
+    }
+    const seen = lastUserRef.current;
+    lastUserRef.current = { sessionId: session.id, index: lastUserIndex };
+    // Phones keep the box at the bottom (see workspace.css), so they keep following the bottom too
+    const onTop = composerOnTop && window.matchMedia('(min-width: 769px)').matches;
+    if (seen.sessionId !== session.id || !onTop) {
+      // Opening a session shows its latest turns, as at the bottom
+      if (seen.sessionId !== session.id) stickToBottomRef.current = true;
+      anchorRef.current = null;
+    } else if (lastUserIndex > seen.index) {
+      // A newer message, not a rewind to an older one
+      anchorRef.current = { turnId: session.turns[lastUserIndex].id, scroll: true };
+      stickToBottomRef.current = false;
+    }
+
+    tail.style.height = '0px';
+    const anchor = anchorRef.current;
+    const turnEl = anchor && el.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(anchor.turnId)}"]`);
+    if (anchor && turnEl) {
+      const top = turnEl.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - ANCHOR_GAP;
+      tail.style.height = `${Math.max(0, el.clientHeight - (el.scrollHeight - top))}px`;
+      if (anchor.scroll) {
+        anchor.scroll = false;
+        el.scrollTop = top;
+        return;
+      }
+    }
     // Instant, not smooth: a smooth scroll emits intermediate scroll events that
     // would read as "user scrolled up" and unstick the view.
-    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [session.turns, session.id, session.state, session.pendingPermission, session.pendingElicitation]);
+    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [session.turns, session.id, session.state, session.pendingPermission, session.pendingElicitation, composerOnTop]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -391,14 +437,14 @@ export const ConversationView: React.FC<{
                 <div className="ws-status is-blocked" role="status">
                   <Icon name="shield" size={13} />
                   <span className="ws-status-text" title={session.pendingPermission.title}>
-                    Waiting for your approval below
+                    Waiting for your approval {composerOnTop ? 'above' : 'below'}
                   </span>
                 </div>
               ) : session.pendingElicitation ? (
                 <div className="ws-status is-blocked" role="status">
                   <Icon name="help" size={13} />
                   <span className="ws-status-text" title={session.pendingElicitation.message}>
-                    Waiting for your answer below
+                    Waiting for your answer {composerOnTop ? 'above' : 'below'}
                   </span>
                 </div>
               ) : (
@@ -423,6 +469,7 @@ export const ConversationView: React.FC<{
             </div>
           )}
         </div>
+        <div ref={tailRef} aria-hidden />
       </div>
 
       {showJump && (

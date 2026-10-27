@@ -18,7 +18,7 @@ import { Composer } from './Composer';
 import { MobileActionSheet } from './MobileActionSheet';
 import { isCompacting } from './CompactionCard';
 import { ImageLightbox } from './ImageLightbox';
-import { nextPriority, runningSubagents } from './sessionMeta';
+import { cx, nextPriority, runningSubagents } from './sessionMeta';
 import { AgentsPanel, agentTaskCounts } from './AgentsView';
 import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
@@ -26,6 +26,7 @@ import { SnoozeModal, TagsPanel, relatedSessionCount } from './SessionOrganize';
 import { PendingStartCard, WaitingChildrenCard } from './PendingStartCard';
 import { RestoreSessionBanner, isRestorable } from './RestorePrompt';
 import { ResumeAtModal, ResumeBanner } from './ResumeLater';
+import { useComposerLayout } from '../composerLayout';
 
 // Other areas import these from here.
 export { STATE_LABEL, formatTime, nextPriority } from './sessionMeta';
@@ -72,6 +73,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   // Read from the summaries too: they always carry it, null once it is sent or cancelled
   const scheduledResume = summary?.scheduledResume ?? null;
   const [promptText, setPromptText] = useState('');
+  const [composerLayout] = useComposerLayout();
   const [rollingBack, setRollingBack] = useState(false);
   const [requestingCompaction, setRequestingCompaction] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -365,7 +367,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   ];
 
   return (
-    <div className="main-view ws-root">
+    <div className={cx('main-view ws-root', composerLayout.position === 'top' && 'is-composer-top')}>
       <SessionHeader
         session={session}
         onRename={handleRename}
@@ -415,6 +417,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
             <ActivityStrip session={session} />
             <ConversationView
               session={session}
+              composerOnTop={composerLayout.position === 'top'}
               onRollback={handleRollback}
               onPreviewImage={setPreviewImage}
               onCancelPrompt={() => handleCancelPrompt('end turn')}

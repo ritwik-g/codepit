@@ -1365,6 +1365,58 @@
   animation: ui-pulse 1.2s ease-in-out infinite;
 }
 
+/* Shrunk while unused (Settings): one line, no toolbar, until focused or holding something */
+.ws-composer-dock.is-compact .ws-composer {
+  cursor: text;
+}
+
+.ws-composer-dock.is-compact .ws-composer-toolbar {
+  display: none;
+}
+
+.ws-composer-dock.is-compact .ws-textarea {
+  min-height: 0;
+  height: 42px !important; /* over the autogrow height left inline */
+  padding: 10px 16px;
+  overflow: hidden;
+  cursor: text;
+}
+
+/* The layout menu next to Send opens upward, like the other composer menus */
+.ws-composer-send .menu-popover {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* Message box on top (Settings): it sits under the tabs and its menus open downward. Phones keep
+   it at the bottom, where the keyboard is. */
+@media (min-width: 769px) {
+  .ws-root.is-composer-top .ws-composer-send .menu-popover {
+    top: calc(100% + 6px);
+    bottom: auto;
+  }
+
+  .ws-root.is-composer-top .ws-body {
+    order: 1;
+  }
+
+  .ws-root.is-composer-top .ws-composer-dock {
+    padding: var(--space-3) var(--space-6) var(--space-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .ws-root.is-composer-top .ws-slash {
+    top: calc(100% + var(--space-2));
+    bottom: auto;
+  }
+
+  .ws-root.is-composer-top .ws-model-switcher,
+  .ws-root.is-composer-top .pick-popover {
+    top: calc(100% + 10px);
+    bottom: auto;
+  }
+}
+
 /* ============================================================ Slash menu */
 
 .ws-slash {

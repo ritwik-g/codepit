@@ -21,6 +21,7 @@ const SHORTCUTS: Array<{ keys: string[]; label: string }> = [
   { keys: ['/'], label: 'Search sessions' },
   { keys: ['p'], label: 'Cycle priority' },
   { keys: ['c'], label: 'Mark for cleanup' },
+  { keys: ['i'], label: 'Type a message' },
   { keys: ['Enter'], label: 'Open the selected session' },
   { keys: ['Esc'], label: 'Close dialogs' },
 ];
