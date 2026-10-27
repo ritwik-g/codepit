@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
  * in the list and starts again on the next message; one in a turn, waiting on the user, with
  * a resume scheduled or used recently is left running; Never stops nothing; a reply the
  * agent starts on its own shows as working until its result; a background command with no
- * output file is not running; and the HTTP routes. Runs against a scripted agent.
+ * output file is not running; one unused that long is not offered back after a restart; and
+ * the HTTP routes. Runs against a scripted agent.
  */
 
 const testAppDir = path.join(os.tmpdir(), `codepit-idle-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
@@ -21,7 +22,7 @@ process.env.CODEPIT_CLAUDE_USAGE_CMD = 'echo';
 fs.mkdirSync(stateDir, { recursive: true });
 
 const { readIdleStopHours, DEFAULT_IDLE_STOP_HOURS, IDLE_STOPS_PER_TICK } = await import('../server/idle-stop.js');
-const { sessionManager } = await import('../server/acp/session-mgr.js');
+const { sessionManager, idleAtRestart } = await import('../server/acp/session-mgr.js');
 const { readEvents } = await import('../server/event-log.js');
 const { AGENT_REGISTRY } = await import('../server/agents/registry.js');
 const { store } = await import('../server/store.js');
@@ -171,6 +172,26 @@ async function main(): Promise<void> {
   check('the one with its file runs on', statusOf('real') === 'running');
   check('one just started is given time', statusOf('young') === 'running');
   delete process.env.CLAUDE_CODE_TMPDIR;
+
+  console.log('4d. Not offered back after a restart when unused');
+  const h = 3_600_000;
+  const now = Date.now();
+  const idle = (patch: Record<string, unknown>, offer: Record<string, unknown> = {}) =>
+    idleAtRestart({
+      turns: [
+        { id: 'u', role: 'user', content: 'hi', timestamp: now - 49 * h },
+        { id: 'r', role: 'system', content: 'restored', timestamp: now - h },
+      ],
+      restore: { runningSince: now - 2 * h, foundAt: now, turnInterrupted: false, continues: true, ...offer },
+      ...patch,
+    } as any, now, 48);
+  check('one last used 49h ago is dropped, CodePit notes aside', idle({}));
+  check('one used 47h ago is offered', !idle({ lastTurnEndedAt: now - 47 * h }));
+  check('one whose turn the close cut short is offered', !idle({}, { turnInterrupted: true }));
+  check('one with background work cut short is offered', !idle({}, { backgroundInterrupted: 1 }));
+  check('one with queued messages is offered', !idle({ queuedPrompts: [{ id: 'q' }] }));
+  check('one with a resume scheduled is offered', !idle({ scheduledResume: { at: now } }));
+  check('Never drops nothing', !idleAtRestart({ turns: [], restore: { turnInterrupted: false } } as any, now, 0));
 
   console.log('5. HTTP routes');
   const app = express();

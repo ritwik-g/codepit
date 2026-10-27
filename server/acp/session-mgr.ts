@@ -480,6 +480,19 @@ export class SessionManager extends EventEmitter {
         // A quit stopped them already and kept the count on the mark; a crash left them running
         const running = Math.max(live?.backgroundRunning ?? 0, runningBackgroundWork(session));
         if (running > 0) session.restore.backgroundInterrupted = running;
+        // The idle clock starts again with each agent start, and CodePit restarts more often than
+        // the idle-stop setting: an agent unused for that long is stopped here, not offered back
+        const idleHours = readIdleStopHours();
+        if (idleAtRestart(session, Date.now(), idleHours)) {
+          delete session.restore;
+          session.turns.push({
+            id: `sys-${Date.now()}-idle`,
+            role: 'system',
+            content: `🛑 Agent not restored after CodePit restarted: unused for over ${idleLabel(idleHours)}. Your next message starts it again.`,
+            timestamp: Date.now(),
+          });
+          logEvent({ kind: 'agent.stopped', session: eventParty(session, session.id), agentId: session.agentId, reason: `Not restored: unused for ${idleLabel(idleHours)}`, idleHours });
+        }
       }
       if (!host && endBackgroundWork(session, 'Stopped when the server restarted')) {
         sessionChanged = true;
@@ -3410,6 +3423,20 @@ export function restorePrompt(offer: Pick<RestoreOffer, 'turnInterrupted' | 'bac
     (background > 0 ? 'Those subagents and tasks are gone: check what they finished and start again whatever they had not. ' : '') +
     'Continue from where you left off.'
   );
+}
+
+/**
+ * A restore offer to drop because the agent went unused for the idle-stop hours: the last turn
+ * the user or the agent took is that old, and the close cut nothing short and left nothing
+ * waiting (queued messages, a scheduled resume). CodePit's own notes are not use.
+ */
+export function idleAtRestart(s: AcpSession, now: number, hours: number): boolean {
+  const offer = s.restore;
+  if (hours <= 0 || !offer || offer.turnInterrupted || (offer.backgroundInterrupted ?? 0) > 0) return false;
+  if (s.scheduledResume || (s.queuedPrompts?.length ?? 0) > 0) return false;
+  let lastUsed = s.lastTurnEndedAt ?? 0;
+  for (const turn of s.turns) if (turn.role !== 'system') lastUsed = Math.max(lastUsed, turn.timestamp || 0);
+  return lastUsed > 0 && now - lastUsed >= hours * 3_600_000;
 }
 
 /** Subagents and background tasks still marked running. */
