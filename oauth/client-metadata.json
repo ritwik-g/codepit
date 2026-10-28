@@ -1,0 +1,9 @@
+{
+  "client_id": "https://ritwik-g.github.io/codepit/oauth/client-metadata.json",
+  "client_name": "CodePit",
+  "client_uri": "https://github.com/ritwik-g/codepit",
+  "redirect_uris": ["http://127.0.0.1/oauth/mcp/callback", "http://127.0.0.1:7890/oauth/mcp/callback", "http://[::1]/oauth/mcp/callback", "http://[::1]:7890/oauth/mcp/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}
