@@ -20,6 +20,10 @@ const { sessionManager } = await import('../server/acp/session-mgr.js');
 const { store } = await import('../server/store.js');
 const { apiRouter } = await import('../server/api.js');
 const { default: express } = await import('express');
+const oauth = await import('../server/mcp/oauth.js');
+const { oauthProxyHandler } = await import('../server/mcp/oauth-proxy.js');
+const { oauthCallbackHandler } = await import('../server/mcp/oauth-callback.js');
+const crypto = await import('node:crypto');
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
@@ -315,6 +319,178 @@ async function run() {
     assert(/MEMORY_FILE_PATH/.test((await call('GET', `/servers/${memServer.id}/memory-graph`)).json.error), 'no path explained');
     assert((await call('GET', '/servers/nope/memory-graph')).status === 404, 'unknown server 404');
     srv.close();
+    console.log('   ok');
+
+    console.log('8. OAuth sign-in, refresh and the agents\' proxy');
+    {
+      // One fake that is both the MCP server (/mcp) and its authorization server (/as)
+      const as = { challenge: '', clientRedirect: '', valid: new Set<string>(), refresh: 'rt1', n: 0, revoked: false, resource: '', cimd: false };
+      const fake2 = http.createServer((req, res) => {
+        const u = new URL(req.url!, base2());
+        const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+          res.writeHead(status, { 'Content-Type': 'application/json', ...headers }).end(JSON.stringify(body));
+        let body = '';
+        req.on('data', (d) => (body += d));
+        req.on('end', () => {
+          if (u.pathname === '/mcp') {
+            const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
+            if (!token || !as.valid.has(token)) {
+              return json(401, { error: 'nope' }, { 'WWW-Authenticate': `Bearer resource_metadata="${base2()}/.well-known/oauth-protected-resource/mcp", scope="read"` });
+            }
+            if (req.method === 'GET') {
+              res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+              return res.end('event: message\ndata: {"jsonrpc":"2.0","method":"ping"}\n\n');
+            }
+            const msg = JSON.parse(body || '{}');
+            if (msg.method === 'initialize') return json(200, { jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'oauth-fake' } } }, { 'Mcp-Session-Id': 'o1' });
+            if (msg.method === 'tools/list') return json(200, { jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'checks' }] } });
+            return res.writeHead(202).end();
+          }
+          if (u.pathname === '/.well-known/oauth-protected-resource/mcp') return json(200, { resource: `${base2()}/mcp`, authorization_servers: [`${base2()}/as`] });
+          if (u.pathname === '/.well-known/oauth-authorization-server/as') {
+            return json(200, {
+              issuer: `${base2()}/as`,
+              authorization_endpoint: `${base2()}/as/authorize`,
+              token_endpoint: `${base2()}/as/token`,
+              ...(as.cimd ? { client_id_metadata_document_supported: true } : { registration_endpoint: `${base2()}/as/register` }),
+              code_challenge_methods_supported: ['S256'],
+            });
+          }
+          if (u.pathname === '/as/register') {
+            const reg = JSON.parse(body);
+            as.clientRedirect = reg.redirect_uris[0];
+            return json(201, { client_id: 'cid', token_endpoint_auth_method: 'none' });
+          }
+          if (u.pathname === '/as/authorize') {
+            // Stands in for the user approving in the browser
+            assert(u.searchParams.get('client_id') === 'cid' && u.searchParams.get('redirect_uri') === as.clientRedirect, 'authorize: client and redirect');
+            assert(u.searchParams.get('code_challenge_method') === 'S256' && u.searchParams.get('scope') === 'read', 'authorize: PKCE and scope');
+            as.challenge = u.searchParams.get('code_challenge')!;
+            as.resource = u.searchParams.get('resource')!;
+            return res.writeHead(302, { Location: `${as.clientRedirect}?code=c1&state=${encodeURIComponent(u.searchParams.get('state')!)}` }).end();
+          }
+          if (u.pathname === '/as/token') {
+            const f = new URLSearchParams(body);
+            if (f.get('resource') !== `${base2()}/mcp`) return json(400, { error: 'invalid_target' });
+            if (f.get('grant_type') === 'authorization_code') {
+              const ok = f.get('code') === 'c1' && crypto.createHash('sha256').update(f.get('code_verifier') ?? '').digest('base64url') === as.challenge;
+              if (!ok) return json(400, { error: 'invalid_grant' });
+              as.valid.add('at1');
+              return json(200, { access_token: 'at1', refresh_token: 'rt1', expires_in: 3600, token_type: 'Bearer' });
+            }
+            if (f.get('grant_type') === 'refresh_token') {
+              if (as.revoked || f.get('refresh_token') !== as.refresh) return json(400, { error: 'invalid_grant' });
+              const at = `at${++as.n + 1}`;
+              as.valid.add(at);
+              as.refresh = `rt${as.n + 1}`;
+              return json(200, { access_token: at, refresh_token: as.refresh, expires_in: 3600 });
+            }
+          }
+          res.writeHead(404).end();
+        });
+      });
+      fake2.listen(0, '127.0.0.1');
+      await once(fake2, 'listening');
+      function base2() {
+        return `http://127.0.0.1:${(fake2.address() as AddressInfo).port}`;
+      }
+
+      // CodePit's side, mounted the way server.ts does
+      const app2 = express();
+      app2.all('/mcp-oauth/:id', (req, res) => void oauthProxyHandler(req, res));
+      app2.get('/oauth/mcp/callback', (req, res) => void oauthCallbackHandler(req, res));
+      app2.use(express.json());
+      app2.use('/api', apiRouter);
+      const srv2 = app2.listen(0, '127.0.0.1');
+      await once(srv2, 'listening');
+      const cp = `http://127.0.0.1:${(srv2.address() as AddressInfo).port}`;
+      oauth.setOAuthEndpoints({ callbackUrl: `${cp}/oauth/mcp/callback`, proxyBase: `${cp}/mcp-oauth` });
+      const call2 = async (method: string, url: string, body?: unknown) => {
+        const r = await fetch(`${cp}/api/mcp${url}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+        return { status: r.status, json: (await r.json()) as any };
+      };
+
+      const checkly = cfg.createMcpServer({ name: 'checky', transport: 'http', url: `${base2()}/mcp`, scope: 'all' });
+      const before = await probeMcpServer(checkly, workDir);
+      assert(!before.ok && before.authRequired && /sign in/.test(before.error || ''), `401 offers sign-in: ${JSON.stringify(before)}`);
+
+      const started = await call2('POST', `/servers/${checkly.id}/oauth/start`);
+      assert(started.status === 200 && started.json.authorizeUrl.startsWith(`${base2()}/as/authorize?`), `sign-in starts: ${JSON.stringify(started.json)}`);
+      const approved = await fetch(started.json.authorizeUrl, { redirect: 'manual' });
+      const landing = await fetch(approved.headers.get('location')!);
+      assert(landing.status === 200 && /Signed in to checky/.test(await landing.text()), 'callback finishes the sign-in');
+      assert(as.resource === `${base2()}/mcp`, 'resource indicator sent');
+      const replay = await fetch(approved.headers.get('location')!);
+      assert(replay.status === 400, 'a state is good for one sign-in only');
+
+      const view = (await call2('GET', '/servers')).json.servers.find((x: any) => x.id === checkly.id);
+      assert(view.oauth?.signedIn && view.oauth.issuer === `${base2()}/as`, `view shows the sign-in: ${JSON.stringify(view.oauth)}`);
+      assert(!JSON.stringify(view).includes('at1') && !JSON.stringify(view).includes('rt1'), 'tokens never leave the API');
+      assert((fs.statSync(oauth.getOAuthFile()).mode & 0o777) === 0o600, 'token file is owner-only');
+
+      const after = await probeMcpServer(checkly, workDir);
+      assert(after.ok && after.tools?.[0]?.name === 'checks', `test uses the token: ${after.error}`);
+
+      // Agents get the proxy and a key, never the OAuth token
+      const resolved = cfg.resolveSessionMcpServers('claude', workDir, { http: true }, [checkly]);
+      const entry = resolved.servers[0] as any;
+      assert(entry.url === `${cp}/mcp-oauth/${checkly.id}` && !JSON.stringify(entry).includes('at1'), `agent entry goes through the proxy: ${JSON.stringify(entry)}`);
+      const key = entry.headers[0].value as string;
+      const viaProxy = (init: RequestInit = {}) =>
+        fetch(entry.url, {
+          method: 'POST',
+          ...init,
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: key, ...(init.headers ?? {}) },
+          body: init.method === 'GET' ? undefined : JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+        });
+      const proxied = await viaProxy();
+      assert(proxied.status === 200 && proxied.headers.get('mcp-session-id') === 'o1', `proxy forwards: ${proxied.status}`);
+      assert(((await proxied.json()) as any).result.serverInfo.name === 'oauth-fake', 'proxy answer');
+      assert((await viaProxy({ headers: { Authorization: 'Bearer wrong' } })).status === 401, 'wrong key refused');
+      assert((await viaProxy({ headers: { Origin: 'http://evil.example' } })).status === 403, 'browser pages refused');
+      const stream = await viaProxy({ method: 'GET' });
+      assert(stream.headers.get('content-type')?.includes('text/event-stream') && (await stream.text()).includes('ping'), 'event stream passes through');
+
+      // The server drops the token: the proxy refreshes and sends the request again
+      as.valid.delete('at1');
+      const refreshed = await viaProxy();
+      assert(refreshed.status === 200, `refresh on 401: ${refreshed.status} ${await refreshed.clone().text()}`);
+      assert(!refreshed.headers.get('www-authenticate'), 'no challenge reaches the agent');
+
+      // Refresh refused for good: sign in again
+      as.valid.clear();
+      as.revoked = true;
+      const lapsed = await viaProxy();
+      assert(lapsed.status === 401 && /expired/.test(await lapsed.text()), 'lapsed sign-in explained');
+      const lapsedView = (await call2('GET', '/servers')).json.servers.find((x: any) => x.id === checkly.id);
+      assert(lapsedView.oauth?.expired && !lapsedView.oauth.signedIn, 'view shows the lapse');
+      const skipped = cfg.resolveSessionMcpServers('claude', workDir, { http: true }, [checkly]);
+      assert(skipped.servers.length === 0 && /expired/.test(skipped.info.skipped[0]?.reason ?? ''), 'lapsed server left out of sessions');
+
+      const out = await call2('POST', `/servers/${checkly.id}/oauth/sign-out`);
+      assert(out.status === 200 && !out.json.server.oauth, 'sign-out');
+      const plain = cfg.resolveSessionMcpServers('claude', workDir, { http: true }, [checkly]);
+      assert((plain.servers[0] as any)?.url === `${base2()}/mcp`, 'signed out: the server is handed over as configured');
+      await call2('DELETE', `/servers/${checkly.id}`);
+      assert(!JSON.parse(fs.readFileSync(oauth.getOAuthFile(), 'utf8')).servers[checkly.id], 'removing a server forgets its sign-in');
+
+      // An authorization server that takes a client ID metadata document instead of registration (Checkly's Auth0)
+      as.cimd = true;
+      const cimdServer = cfg.createMcpServer({ name: 'cimd', transport: 'http', url: `${base2()}/mcp`, scope: 'all' });
+      const cimd = new URL((await call2('POST', `/servers/${cimdServer.id}/oauth/start`)).json.authorizeUrl);
+      assert(cimd.searchParams.get('client_id') === oauth.CLIENT_METADATA_URL, `metadata document as the client ID: ${cimd}`);
+      const meta = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'oauth', 'client-metadata.json'), 'utf8'));
+      assert(meta.client_id === oauth.CLIENT_METADATA_URL, 'the published document names its own URL as the client ID');
+      assert(meta.redirect_uris.includes(new URL(cimd.searchParams.get('redirect_uri')!).origin.replace(/:\d+$/, '') + '/oauth/mcp/callback'), 'redirect listed');
+      cfg.deleteMcpServer(cimdServer.id);
+
+      assert(oauth.parseWwwAuthenticate('Bearer realm="x", error="invalid_token", scope="a b"').scope === 'a b', 'challenge parsing');
+      oauth.setOAuthEndpoints({ callbackUrl: null, proxyBase: null });
+      srv2.closeAllConnections();
+      srv2.close();
+      fake2.closeAllConnections();
+      fake2.close();
+    }
     console.log('   ok');
 
     console.log('\nMCP tests passed');

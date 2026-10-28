@@ -711,7 +711,21 @@ export interface McpServerConfig {
 export type McpServerView = McpServerConfig & {
   /** A memory MCP server whose knowledge graph CodePit can show. */
   memoryGraph?: boolean;
+  /** CodePit's OAuth sign-in to this server, when there is or was one. */
+  oauth?: McpOAuthView;
 };
+
+export interface McpOAuthView {
+  signedIn: boolean;
+  /** The authorization server refused a refresh: sign in again. */
+  expired?: boolean;
+  /** The authorization server signed in to. */
+  issuer: string;
+  signedInAt?: number;
+  /** When the current access token runs out; CodePit refreshes it before then when it can. */
+  expiresAt?: number;
+  canRefresh: boolean;
+}
 
 export interface MemoryGraphObservation {
   /** Stamp time as written, e.g. "2026-10-02 00:45"; empty when unstamped. */

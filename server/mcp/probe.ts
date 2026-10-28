@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { McpServerConfig } from '../types.js';
 import { toAcpMcpServer } from './config.js';
+import { OAuthError, accessToken, canSignIn, isSignedIn } from './oauth.js';
 
 // "Test connection": run the MCP handshake (initialize, then tools/list) the
 // way an agent would, so a broken command, URL or token shows up here rather
@@ -12,6 +13,8 @@ export interface McpProbeResult {
   server?: { name?: string; version?: string };
   tools?: Array<{ name: string; description?: string }>;
   error?: string;
+  /** The server turned the request down; signing in with OAuth may be the fix. */
+  authRequired?: boolean;
   durationMs: number;
 }
 
@@ -76,7 +79,15 @@ export async function probeMcpServer(server: McpServerConfig, cwd: string): Prom
     if (server.transport === 'http') return await probeHttp(server, cwd, startedAt);
     return await probeSse(server, cwd, startedAt);
   } catch (err: any) {
-    return { ok: false, error: describeError(err, server.url), durationMs: Date.now() - startedAt };
+    const denied = err instanceof OAuthError || (err instanceof HttpStatusError && (err.status === 401 || err.status === 403));
+    const authRequired = denied && canSignIn(server) ? true : undefined;
+    return { ok: false, error: describeError(err, server.url), authRequired, durationMs: Date.now() - startedAt };
+  }
+}
+
+class HttpStatusError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
   }
 }
 
@@ -194,9 +205,18 @@ const headerObj = (server: McpServerConfig, cwd: string) => {
   return { url: spec.url, headers: Object.fromEntries(spec.headers.map((h) => [h.name, h.value])) };
 };
 
+/** The configured headers, with CodePit's access token in place of any Authorization when signed in. */
+async function httpHeaders(server: McpServerConfig, cwd: string): Promise<{ url: string; headers: Record<string, string> }> {
+  const { url, headers } = headerObj(server, cwd);
+  if (!isSignedIn(server)) return { url, headers };
+  const rest = Object.fromEntries(Object.entries(headers).filter(([k]) => k.toLowerCase() !== 'authorization'));
+  return { url, headers: { ...rest, Authorization: `Bearer ${await accessToken(server.id)}` } };
+}
+
 /** Streamable HTTP: each request is a POST that answers with JSON or a short SSE stream. */
 async function probeHttp(server: McpServerConfig, cwd: string, startedAt: number): Promise<McpProbeResult> {
-  const { url, headers } = headerObj(server, cwd);
+  const { url, headers } = await httpHeaders(server, cwd);
+  const signedIn = isSignedIn(server);
   const signal = AbortSignal.timeout(HTTP_TIMEOUT_MS);
   let sessionId: string | null = null;
 
@@ -216,8 +236,9 @@ async function probeHttp(server: McpServerConfig, cwd: string, startedAt: number
     sessionId = res.headers.get('mcp-session-id') ?? sessionId;
     if (!res.ok) {
       const text = (await readCapped(res).catch(() => '')).slice(0, 300);
-      const hint = res.status === 401 || res.status === 403 ? ' (check the token in the headers)' : '';
-      throw new Error(`HTTP ${res.status} ${res.statusText}${hint}${text ? `: ${text}` : ''}`);
+      const denied = res.status === 401 || res.status === 403;
+      const hint = !denied ? '' : signedIn ? ' (the sign-in was turned down; sign in again)' : canSignIn(server) ? ' (sign in, or check the token in the headers)' : ' (check the token in the headers)';
+      throw new HttpStatusError(res.status, `HTTP ${res.status} ${res.statusText}${hint}${text ? `: ${text}` : ''}`);
     }
     if (!expectReply) return {};
     const type = res.headers.get('content-type') || '';

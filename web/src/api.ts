@@ -81,6 +81,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ cwd }),
     }),
+  startMcpSignIn: (id: string) =>
+    request<{ authorizeUrl: string }>(`/api/mcp/servers/${id}/oauth/start`, { method: 'POST', body: '{}' }),
+  signOutMcpServer: (id: string) =>
+    request<{ server: McpServer }>(`/api/mcp/servers/${id}/oauth/sign-out`, { method: 'POST', body: '{}' }),
   getMemoryGraph: (id: string, since?: string) =>
     request<{ graph: MemoryGraph } | { unchanged: true }>(
       `/api/mcp/servers/${id}/memory-graph${since ? `?since=${encodeURIComponent(since)}` : ''}`

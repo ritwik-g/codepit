@@ -18,6 +18,9 @@ import { lanAccess, readStoredLanEnabled, type LanStatus } from './lan.js';
 import { store } from './store.js';
 import { codepitMcpHandler } from './mcp/codepit/endpoint.js';
 import { setCodepitMcpEndpoint } from './mcp/codepit/access.js';
+import { oauthProxyHandler } from './mcp/oauth-proxy.js';
+import { oauthCallbackHandler } from './mcp/oauth-callback.js';
+import { setOAuthEndpoints } from './mcp/oauth.js';
 
 export interface StartServerOptions {
   /** Built web client to serve; nothing is served outside /api when absent or missing. */
@@ -59,10 +62,21 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   removeLegacyToken();
   setAppKey(opts.appKey);
   loadStoredCredentials();
-  // Changes made while CodePit was closed, on either side, are reconciled once at start
-  syncAgyMcpQuietly();
 
   const app = express();
+
+  // Agents' way to MCP servers CodePit signed in to. Ahead of the JSON parser: the body goes on as sent
+  app.all('/mcp-oauth/:id', (req, res) => {
+    oauthProxyHandler(req, res).catch((err) => {
+      console.error('[mcp-oauth] proxy request failed:', err);
+      if (!res.headersSent) res.status(500).json({ error: 'MCP proxy request failed' });
+      else res.destroy();
+    });
+  });
+  // Where the browser lands after an MCP server's sign-in page; the one-time state is the guard
+  app.get('/oauth/mcp/callback', (req, res) => {
+    void oauthCallbackHandler(req, res);
+  });
 
   // JSON only: the web client never sends form bodies, and a urlencoded parser would let a
   // cross-site HTML form reach the API as a "simple" request without a CORS preflight.
@@ -141,7 +155,13 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   const url = `http://${urlHost(network.host)}:${port}`;
   // Agents reach the MCP server on loopback, which a listener bound to one LAN address does not serve
   const servesLoopback = ['127.0.0.1', '::1', 'localhost', '0.0.0.0', '::'].includes(network.host);
-  setCodepitMcpEndpoint(servesLoopback ? `http://${network.host === '::1' ? '[::1]' : '127.0.0.1'}:${port}/mcp` : null);
+  const loopbackBase = servesLoopback ? `http://${network.host === '::1' ? '[::1]' : '127.0.0.1'}:${port}` : null;
+  setCodepitMcpEndpoint(loopbackBase && `${loopbackBase}/mcp`);
+  // The sign-in page opens in a browser on this machine, which reaches the server where it listens
+  setOAuthEndpoints({ callbackUrl: `${loopbackBase ?? url}/oauth/mcp/callback`, proxyBase: loopbackBase && `${loopbackBase}/mcp-oauth` });
+  // Changes made while CodePit was closed, on either side, are reconciled once at start. Not before
+  // now: signed-in servers go into agy's file by the proxy's address, known only once listening.
+  syncAgyMcpQuietly();
   let closing: Promise<void> | null = null;
 
   return {
@@ -153,6 +173,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
       (closing ??= (async () => {
         sessionManager.shutdown();
         setCodepitMcpEndpoint(null);
+        setOAuthEndpoints({ callbackUrl: null, proxyBase: null });
         store.flush();
         await lanAccess.close();
         await new Promise<void>((resolve) => {

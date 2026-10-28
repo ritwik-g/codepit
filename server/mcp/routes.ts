@@ -18,6 +18,7 @@ import { listPresets, presetToInput } from './presets.js';
 import { probeMcpServer } from './probe.js';
 import { inspectEcosystems } from './inspect.js';
 import { agySyncStatus, syncAgyMcpQuietly } from './agy-sync.js';
+import { OAuthError, forgetOAuth, signOut, startSignIn } from './oauth.js';
 
 export const mcpRouter = Router();
 
@@ -28,6 +29,10 @@ const id = (req: Request) => String(req.params.id);
 function fail(res: Response, err: unknown, fallback: string): void {
   if (err instanceof McpConfigError) {
     res.status(err.message === 'MCP server not found' ? 404 : 400).json({ error: err.message });
+    return;
+  }
+  if (err instanceof OAuthError) {
+    res.status(400).json({ error: err.message });
     return;
   }
   res.status(500).json({ error: (err as Error)?.message || fallback });
@@ -91,6 +96,7 @@ mcpRouter.delete('/servers/:id', (req, res) => {
     res.status(404).json({ error: 'MCP server not found' });
     return;
   }
+  forgetOAuth(id(req));
   res.json({ ok: true });
 });
 
@@ -105,6 +111,31 @@ mcpRouter.post('/servers/:id/test', async (req, res) => {
     ? req.body.cwd
     : os.homedir();
   res.json({ result: await probeMcpServer(server, cwd), cwd });
+});
+
+// Sign in with OAuth: the answer is the page to open; the browser comes back to
+// /oauth/mcp/callback, outside the /api gate, which finishes the sign-in
+mcpRouter.post('/servers/:id/oauth/start', async (req, res) => {
+  const server = getMcpServer(id(req));
+  if (!server) {
+    res.status(404).json({ error: 'MCP server not found' });
+    return;
+  }
+  try {
+    res.json(await startSignIn(server));
+  } catch (err) {
+    fail(res, err, 'Failed to start the sign-in');
+  }
+});
+
+mcpRouter.post('/servers/:id/oauth/sign-out', (req, res) => {
+  const server = getMcpServer(id(req));
+  if (!server) {
+    res.status(404).json({ error: 'MCP server not found' });
+    return;
+  }
+  signOut(server.id);
+  res.json({ server: toView(server) });
 });
 
 // Read-only: the file is the server's own MEMORY_FILE_PATH. ?since=<version> answers

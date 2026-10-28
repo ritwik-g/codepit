@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import type * as acp from '@agentclientprotocol/sdk';
 import { getAppDir, ensurePrivateDir, FILE_MODE } from '../paths.js';
 import type { McpServerConfig, McpServerInput, McpServerView, McpTransport, SessionMcpInfo } from '../types.js';
+import { oauthView, proxyEntry, isSignedIn } from './oauth.js';
 
 // App-level MCP servers, configured once and handed to every ACP session the
 // scope allows. Stored in <app dir>/mcp.json with owner-only permissions
@@ -108,6 +109,7 @@ export function toView(server: McpServerConfig): McpServerView {
     env: maskRecord(server.env, isSecretEnv),
     url: maskUrl(server.url),
     headers: maskRecord(server.headers, () => true),
+    oauth: oauthView(server),
   };
 }
 
@@ -231,6 +233,16 @@ const expand = (value: string, cwd: string) => value.split(WORKSPACE_VAR).join(c
 const toPairs = (rec: Record<string, string> | undefined, cwd: string) =>
   Object.entries(rec ?? {}).map(([name, value]) => ({ name, value: expand(value, cwd) }));
 
+/**
+ * How an agent reaches a server CodePit signed in to: CodePit's loopback proxy,
+ * which adds the access token. Undefined when the server isn't signed in.
+ */
+export function signedInEntry(server: McpServerConfig): { url: string; headers: Record<string, string> } | { skipped: string } | undefined {
+  if (isSignedIn(server)) return proxyEntry(server);
+  if (oauthView(server)?.expired) return { skipped: 'CodePit’s sign-in to it has expired. Sign in again in the MCP settings.' };
+  return undefined;
+}
+
 /** The ACP `session/new` entry for one configured server. */
 export function toAcpMcpServer(server: McpServerConfig, cwd: string): acp.McpServer {
   if (server.transport === 'stdio') {
@@ -264,7 +276,16 @@ export function resolveSessionMcpServers(
       info.skipped.push({ name: s.name, reason: `This agent does not accept ${s.transport.toUpperCase()} MCP servers` });
       continue;
     }
-    out.push(toAcpMcpServer(s, cwd));
+    const viaProxy = signedInEntry(s);
+    if (viaProxy && 'skipped' in viaProxy) {
+      info.skipped.push({ name: s.name, reason: viaProxy.skipped });
+      continue;
+    }
+    out.push(
+      viaProxy
+        ? { type: 'http', name: s.name, url: viaProxy.url, headers: Object.entries(viaProxy.headers).map(([name, value]) => ({ name, value })) }
+        : toAcpMcpServer(s, cwd)
+    );
     info.attached.push(s.name);
   }
   return { servers: out, info };

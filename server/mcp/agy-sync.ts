@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getAppDir, ensurePrivateDir, FILE_MODE } from '../paths.js';
 import type { McpServerConfig } from '../types.js';
-import { WORKSPACE_VAR, appliesTo, listMcpServers } from './config.js';
+import { WORKSPACE_VAR, appliesTo, listMcpServers, signedInEntry } from './config.js';
 
 // Antigravity's agy CLI takes no MCP servers per run: it reads one file,
 // ~/.gemini/config/mcp_config.json, which every agy run and the desktop app share.
@@ -78,6 +78,8 @@ function writeManaged(names: Set<string>): void {
 /** Why a server can't go into agy's file, if it can't. */
 function skipReason(server: McpServerConfig): string | undefined {
   if (server.transport === 'sse') return 'agy takes only stdio and HTTP servers.';
+  const viaProxy = signedInEntry(server);
+  if (viaProxy && 'skipped' in viaProxy) return viaProxy.skipped;
   const values = [server.command, ...(server.args ?? []), server.url, ...Object.values(server.env ?? {}), ...Object.values(server.headers ?? {})];
   if (values.some((v) => v?.includes(WORKSPACE_VAR))) {
     return `It uses ${WORKSPACE_VAR}, which follows each session's folder, and agy's settings are shared by every Antigravity run.`;
@@ -89,6 +91,9 @@ function toAgyServer(server: McpServerConfig): AgyServer {
   if (server.transport === 'stdio') {
     return { command: server.command ?? '', args: server.args ?? [], ...(server.env ? { env: server.env } : {}), disabled: false };
   }
+  // Signed in: agy goes through CodePit's proxy, so it works while CodePit runs and never holds the OAuth token
+  const viaProxy = signedInEntry(server);
+  if (viaProxy && !('skipped' in viaProxy)) return { serverUrl: viaProxy.url, headers: viaProxy.headers, disabled: false };
   return { serverUrl: server.url ?? '', ...(server.headers ? { headers: server.headers } : {}), disabled: false };
 }
 

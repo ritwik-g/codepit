@@ -22,6 +22,12 @@ const TAB_LABEL: Record<McpTab, string> = {
 };
 
 type Probe = { running: boolean; result?: McpProbeResult; cwd?: string };
+/** A sign-in waiting on the browser: the page it was sent to, to open again if the first didn't. */
+type SignIn = { starting: boolean; authorizeUrl?: string };
+
+const SIGN_IN_POLL_MS = 2000;
+// The callback forgets a sign-in after ten minutes, so stop looking then
+const SIGN_IN_WAIT_MS = 10 * 60_000;
 
 /** The line under a server's name: its command line or URL. */
 const target = (s: McpServer) => (s.transport === 'stdio' ? [s.command, ...(s.args ?? [])].join(' ') : s.url ?? '');
@@ -88,14 +94,22 @@ const ServerRow: React.FC<{
   clashes: string[];
   /** Where this server stands in agy's settings, when it is meant for Antigravity. */
   agy?: AgySyncEntry | { state: 'error'; reason: string };
+  signIn?: SignIn;
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onSignIn: () => void;
+  onCancelSignIn: () => void;
+  onSignOut: () => void;
   /** Set for memory servers: opens their knowledge graph. */
   onViewGraph?: () => void;
-}> = ({ server, agents, probe, clashes, agy, onToggle, onTest, onEdit, onDelete, onViewGraph }) => {
+}> = ({ server, agents, probe, clashes, agy, signIn, onToggle, onTest, onEdit, onDelete, onSignIn, onCancelSignIn, onSignOut, onViewGraph }) => {
   const fits = agentFit(server, agents);
+  // Sign-in is for Streamable HTTP servers; offered up front once a test is turned down or a sign-in lapses
+  const canSignIn = server.transport === 'http';
+  const signedIn = Boolean(server.oauth?.signedIn);
+  const offerSignIn = canSignIn && !signedIn && !signIn && (server.oauth?.expired || (probe?.result && !probe.result.ok && probe.result.authRequired));
   return (
     <li className={`mcp-server ${server.enabled ? '' : 'is-off'}`}>
       <span className="mcp-server-icon" aria-hidden>
@@ -106,6 +120,16 @@ const ServerRow: React.FC<{
           <span className="mcp-server-name mono">{server.name}</span>
           <Badge mono>{TRANSPORT_LABEL[server.transport]}</Badge>
           {!server.enabled && <Badge>Off</Badge>}
+          {signedIn && (
+            <Badge tone="ok" icon="lock" title={`Signed in with ${server.oauth!.issuer}`}>
+              Signed in
+            </Badge>
+          )}
+          {server.oauth?.expired && (
+            <Badge tone="warn" icon="unlock">
+              Sign-in expired
+            </Badge>
+          )}
         </div>
         <div className="mcp-server-target mono" title={target(server)}>
           {target(server)}
@@ -130,7 +154,29 @@ const ServerRow: React.FC<{
             </div>
           </div>
         )}
-        <ProbeStatus probe={probe} />
+        {signIn && (
+          <div className="mcp-note" role="status">
+            <Spinner size={11} />
+            <div>
+              {signIn.starting ? (
+                'Finding where to sign in…'
+              ) : (
+                <>
+                  Finish signing in in your browser.{' '}
+                  <a className="mcp-linkbtn" href={signIn.authorizeUrl} target="_blank" rel="noreferrer">
+                    Open the sign-in page again
+                  </a>{' '}
+                  ·{' '}
+                  <button type="button" className="mcp-linkbtn" onClick={onCancelSignIn}>
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+        {/* The last test's 401 is what the sign-in is fixing, so it steps aside meanwhile */}
+        {!signIn && <ProbeStatus probe={probe} />}
       </div>
       <div className="mcp-server-actions">
         <Switch checked={server.enabled} onChange={onToggle} label={<span className="sr-only">Use {server.name}</span>} />
@@ -139,15 +185,28 @@ const ServerRow: React.FC<{
             Graph
           </Button>
         )}
-        <Button size="sm" variant="ghost" icon="zap" onClick={onTest} loading={probe?.running}>
-          Test
-        </Button>
+        {offerSignIn ? (
+          <Button size="sm" variant="primary" icon="key" onClick={onSignIn}>
+            Sign in
+          </Button>
+        ) : (
+          <Button size="sm" variant="ghost" icon="zap" onClick={onTest} loading={probe?.running}>
+            Test
+          </Button>
+        )}
         <Menu
           label={`More actions for ${server.name}`}
           size="sm"
           items={[
             { label: 'Edit', icon: 'edit', onSelect: onEdit },
             { label: 'Test connection', icon: 'zap', onSelect: onTest, disabled: probe?.running },
+            ...(canSignIn
+              ? [
+                  signedIn
+                    ? { label: 'Sign out', icon: 'logout' as IconName, onSelect: onSignOut }
+                    : { label: server.oauth?.expired ? 'Sign in again' : 'Sign in with OAuth', icon: 'key' as IconName, onSelect: onSignIn, disabled: Boolean(signIn) },
+                ]
+              : []),
             ...(onViewGraph ? [{ label: 'View graph', icon: 'branch' as IconName, onSelect: onViewGraph }] : []),
             'divider',
             { label: 'Remove', icon: 'trash', danger: true, onSelect: onDelete },
@@ -181,6 +240,7 @@ export const McpModal: React.FC<{
   const [ecoError, setEcoError] = useState<string | null>(null);
   const [ecoRefreshing, setEcoRefreshing] = useState(false);
   const [probes, setProbes] = useState<Record<string, Probe>>({});
+  const [signIns, setSignIns] = useState<Record<string, SignIn>>({});
   const [editing, setEditing] = useState<McpServer | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<McpServer | null>(null);
   const [graphOf, setGraphOf] = useState<McpServer | null>(null);
@@ -280,6 +340,66 @@ export const McpModal: React.FC<{
       .then((r) => settle({ running: false, result: r.result, cwd: r.cwd }))
       .catch((err) => settle({ running: false, result: { ok: false, error: err.message, durationMs: 0 } }));
   };
+
+  // One poll per sign-in waiting on the browser; cancelling or closing the dialog stops it
+  const signInPolls = useRef<Record<string, number>>({});
+  const stopSignIn = (id: string) => {
+    window.clearInterval(signInPolls.current[id]);
+    delete signInPolls.current[id];
+    setSignIns(({ [id]: _drop, ...rest }) => rest);
+  };
+  useEffect(() => () => Object.values(signInPolls.current).forEach((t) => window.clearInterval(t)), []);
+
+  const signIn = (s: McpServer) => {
+    if (signInPolls.current[s.id]) return;
+    // Opened now, while the click still counts as a user gesture, so a browser doesn't block it.
+    // The desktop app hands pages to the system browser and gives back no window.
+    const popup = window.open('', '_blank');
+    setSignIns((p) => ({ ...p, [s.id]: { starting: true } }));
+    setActionError(null);
+    const before = s.oauth?.signedInAt ?? 0;
+    const startedAt = Date.now();
+    signInPolls.current[s.id] = window.setInterval(() => {
+      if (Date.now() - startedAt > SIGN_IN_WAIT_MS) {
+        stopSignIn(s.id);
+        setActionError(`The sign-in to ${s.name} ran out of time. Try again.`);
+        return;
+      }
+      api
+        .getMcpServers()
+        .then((r) => {
+          const next = r.servers.find((x) => x.id === s.id);
+          if (!next?.oauth?.signedIn || (next.oauth.signedInAt ?? 0) <= before || !signInPolls.current[s.id]) return;
+          stopSignIn(s.id);
+          replace(next);
+          setAgyStatus(r.agy ?? null);
+          flash(`Signed in to ${s.name}. New agent sessions get it from now on.`);
+          test(next);
+        })
+        .catch(() => {});
+    }, SIGN_IN_POLL_MS);
+    api
+      .startMcpSignIn(s.id)
+      .then(({ authorizeUrl }) => {
+        if (!signInPolls.current[s.id]) return popup?.close();
+        setSignIns((p) => ({ ...p, [s.id]: { starting: false, authorizeUrl } }));
+        if (popup && !popup.closed) popup.location.href = authorizeUrl;
+        else window.open(authorizeUrl, '_blank', 'noopener');
+      })
+      .catch((err) => {
+        popup?.close();
+        stopSignIn(s.id);
+        setActionError(`Couldn't sign in to ${s.name}: ${err.message}`);
+      });
+  };
+
+  const signOut = (s: McpServer) =>
+    run(async () => {
+      const r = await api.signOutMcpServer(s.id);
+      replace(r.server);
+      forgetProbe(s.id);
+      flash(`Signed out of ${s.name}.`);
+    });
 
   const added = (server: McpServer) => {
     update((prev) => [...prev, server]);
@@ -384,6 +504,10 @@ export const McpModal: React.FC<{
                       })
                     }
                     agy={agyFor(s)}
+                    signIn={signIns[s.id]}
+                    onSignIn={() => signIn(s)}
+                    onCancelSignIn={() => stopSignIn(s.id)}
+                    onSignOut={() => signOut(s)}
                     onTest={() => test(s)}
                     onEdit={() => setEditing(s)}
                     onDelete={() => setConfirmDelete(s)}

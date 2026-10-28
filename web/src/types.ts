@@ -738,9 +738,23 @@ export interface McpServer {
   updatedAt: number;
   /** A memory MCP server whose knowledge graph CodePit can show. */
   memoryGraph?: boolean;
+  /** CodePit's OAuth sign-in to this server, when there is or was one. */
+  oauth?: McpOAuthView;
 }
 
-export type McpServerInput = Omit<McpServer, 'id' | 'createdAt' | 'updatedAt' | 'memoryGraph'>;
+export interface McpOAuthView {
+  signedIn: boolean;
+  /** The authorization server refused a refresh: sign in again. */
+  expired?: boolean;
+  /** The authorization server signed in to. */
+  issuer: string;
+  signedInAt?: number;
+  /** When the current access token runs out; CodePit refreshes it before then when it can. */
+  expiresAt?: number;
+  canRefresh: boolean;
+}
+
+export type McpServerInput = Omit<McpServer, 'id' | 'createdAt' | 'updatedAt' | 'memoryGraph' | 'oauth'>;
 
 export interface MemoryGraphObservation {
   ts: string;
@@ -816,6 +830,8 @@ export interface McpProbeResult {
   server?: { name?: string; version?: string };
   tools?: Array<{ name: string; description?: string }>;
   error?: string;
+  /** The server turned the request down; signing in with OAuth may be the fix. */
+  authRequired?: boolean;
   durationMs: number;
 }
 
