@@ -503,15 +503,30 @@
   --peer-soft: var(--danger-soft);
   --peer-border: var(--danger-border);
 }
+.peer-message:not(.is-expanded) { padding-block: var(--space-2); }
 .peer-message-head {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   min-width: 0;
   color: var(--peer);
   font-size: var(--text-xs);
   font-weight: 600;
+  text-align: left;
 }
+.peer-message-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.peer-message-chevron { flex-shrink: 0; margin-left: auto; color: var(--text-3); transition: transform var(--dur) var(--ease); }
+.peer-message-head[aria-expanded='true'] .peer-message-chevron { transform: rotate(90deg); }
 .peer-message-label { flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.04em; }
 .peer-message-peer {
   overflow: hidden;

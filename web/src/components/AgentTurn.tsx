@@ -141,22 +141,42 @@ export function sentPeerMessage(call: ToolCallRecord): PeerMessageView | null {
   return { direction: 'out', peer: input.to, text, status: call.status, error: call.status === 'failed' ? call.error || call.output : undefined };
 }
 
-/** Messages between Claude sessions, tinted by direction so they stand out from the agent's own work. */
+// A subagent's report arrives wrapped in a harness preamble that ends here; the
+// preview skips it so the collapsed line shows what the report says.
+const HAND_BACK_PREAMBLE_END = 'The report follows:';
+
+/** The first line of a peer message as plain text, for its collapsed card. */
+export function peerMessagePreview(text: string): string {
+  const cut = text.indexOf(HAND_BACK_PREAMBLE_END);
+  const body = text.trimStart().startsWith('[') && cut >= 0 ? text.slice(cut + HAND_BACK_PREAMBLE_END.length) : text;
+  const line = body.split('\n').find((l) => l.trim()) ?? '';
+  return line
+    .replace(/[`*_#>]/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .trim();
+}
+
+/** Messages between Claude sessions, tinted by direction so they stand out from the agent's own work. Collapsed to one line until opened. */
 export const PeerMessageCard: React.FC<{ message: PeerMessageView }> = ({ message }) => {
+  const [expanded, setExpanded] = useState(false);
   const out = message.direction === 'out';
   const failed = message.status === 'failed';
   return (
-    <div className={`peer-message is-${message.direction}${failed ? ' is-failed' : ''}`}>
-      <div className="peer-message-head">
+    <div className={`peer-message is-${message.direction}${failed ? ' is-failed' : ''}${expanded ? ' is-expanded' : ''}`}>
+      <button type="button" className="peer-message-head" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>
         <Icon name={out ? 'send' : 'inbox'} size={13} />
         <span className="peer-message-label">{out ? 'Sent to' : 'Received from'}</span>
         <span className="peer-message-peer">{message.peer}</span>
         {(message.status === 'pending' || message.status === 'running') && <Spinner size={11} />}
         {failed && <Badge tone="danger">Not sent</Badge>}
-      </div>
-      <div className="peer-message-body">
-        <MarkdownContent content={message.text} />
-      </div>
+        {!expanded && <span className="peer-message-preview">{peerMessagePreview(message.text)}</span>}
+        <Icon name="chevronRight" size={13} className="peer-message-chevron" />
+      </button>
+      {expanded && (
+        <div className="peer-message-body">
+          <MarkdownContent content={message.text} />
+        </div>
+      )}
       {failed && message.error && <div className="peer-message-error">{message.error}</div>}
     </div>
   );
