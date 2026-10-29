@@ -10,7 +10,7 @@ import { commandOf, isShellCall } from '../toolDisplay';
 import { getModelMeta } from './AgentModelPicker';
 import { advertisedModelLabel, effortLabel, sessionEffortChoices } from '../effort';
 import type { MenuItem } from './Menu';
-import { SessionHeader, SessionTabsBar, type WorkspaceTab } from './SessionHeader';
+import { SessionHeader, SessionStrip, SessionTabsBar, type WorkspaceTab } from './SessionHeader';
 import { ApprovalBanner } from './ApprovalBanner';
 import { ElicitationCard } from './ElicitationCard';
 import { ConversationView, type RollbackAction } from './ConversationView';
@@ -61,6 +61,16 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   onSelectSession,
 }) => {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('conversation');
+  // Scrolled back through the conversation, the header folds to a strip until the reader
+  // returns to the latest output or opens it again; the next scroll folds it once more.
+  const [readingHistory, setReadingHistory] = useState(false);
+  const [headerOpened, setHeaderOpened] = useState(false);
+  const onReadingHistory = useCallback((away: boolean) => {
+    setReadingHistory(away);
+    setHeaderOpened(false);
+  }, []);
+  useEffect(() => setReadingHistory(false), [session.id, activeTab]);
+  const headerCompact = activeTab === 'conversation' && readingHistory && !headerOpened;
   const [showMobileActions, setShowMobileActions] = useState(false);
   // The restore offer is read from the summaries: the stream's shallow merge never clears a removed key
   const summary = allSessions.find((s) => s.id === session.id);
@@ -367,7 +377,17 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
   ];
 
   return (
-    <div className={cx('main-view ws-root', composerLayout.position === 'top' && 'is-composer-top')}>
+    <div className={cx('main-view ws-root', composerLayout.position === 'top' && 'is-composer-top', headerCompact && 'is-header-compact')}>
+      {headerCompact && (
+        <SessionStrip
+          session={session}
+          contextTokens={contextTokens}
+          contextWindow={pricing.contextWindow}
+          onExpand={() => setHeaderOpened(true)}
+          onStopAgent={handleStopAgent}
+          onBackToList={onBackToList}
+        />
+      )}
       <SessionHeader
         session={session}
         onRename={handleRename}
@@ -418,6 +438,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
             <ConversationView
               session={session}
               composerOnTop={composerLayout.position === 'top'}
+              onReadingHistory={onReadingHistory}
               onRollback={handleRollback}
               onPreviewImage={setPreviewImage}
               onCancelPrompt={() => handleCancelPrompt('end turn')}

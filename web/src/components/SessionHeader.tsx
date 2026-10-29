@@ -309,6 +309,52 @@ export const SessionHeader: React.FC<{
   );
 };
 
+/** The header folded to one thin row while the reader is scrolled back through the conversation. */
+export const SessionStrip: React.FC<{
+  session: AcpSession;
+  contextTokens: number;
+  contextWindow: number;
+  onExpand: () => void;
+  onStopAgent: () => void;
+  onBackToList?: () => void;
+}> = ({ session, contextTokens, contextWindow, onExpand, onStopAgent, onBackToList }) => {
+  const percent = Math.min(100, Math.round((contextTokens / contextWindow) * 100));
+  const tone: Tone = percent > 80 ? 'danger' : percent > 50 ? 'warn' : 'accent';
+  return (
+    <div className="ws-strip">
+      {onBackToList && (
+        <button type="button" className="ws-back" onClick={onBackToList} aria-label="Back to all sessions" title="Back to all sessions">
+          <Icon name="chevronLeft" size={16} />
+        </button>
+      )}
+      <span className="ws-strip-mark" title={session.agentName}>
+        <VendorIcon agentId={session.agentId} size={13} />
+      </span>
+      <button type="button" className="ws-strip-title" onClick={onExpand} title="Show the full header">
+        {session.title || 'Untitled session'}
+      </button>
+      <StateButton session={session} />
+      {session.git?.branch && (
+        <span className="ws-meta ws-strip-branch" title={`Branch ${session.git.branch}`}>
+          <Icon name="branch" size={12} />
+          <span className="ws-meta-text mono">{session.git.branch}</span>
+        </span>
+      )}
+      <span
+        className={cx('ws-strip-context', `tone-${tone}`)}
+        title={`Context window: ${contextTokens.toLocaleString()} of ${contextWindow.toLocaleString()} tokens (${percent}%)`}
+      >
+        <span className="ws-strip-bar">
+          <Progress value={percent} tone={tone} size="sm" label="Context window used" />
+        </span>
+        {percent}%
+      </span>
+      {session.isAgentRunning !== false && <IconButton icon="stop" label="Stop agent" size="sm" onClick={onStopAgent} />}
+      <IconButton icon="chevronDown" label="Show the full header" size="sm" onClick={onExpand} />
+    </div>
+  );
+};
+
 /** Tabs for the workspace body plus a compact context-window meter. */
 export const SessionTabsBar: React.FC<{
   activeTab: WorkspaceTab;

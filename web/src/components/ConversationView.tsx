@@ -258,7 +258,9 @@ export const ConversationView: React.FC<{
   onInsertPrompt: (text: string) => void;
   /** The message box sits above the conversation: each message you send starts at the top of the view. */
   composerOnTop?: boolean;
-}> = ({ session, onRollback, onPreviewImage, onCancelPrompt, onInsertPrompt, composerOnTop = false }) => {
+  /** Called on each scroll with whether the reader is back in history, away from the latest output. */
+  onReadingHistory?: (away: boolean) => void;
+}> = ({ session, onRollback, onPreviewImage, onCancelPrompt, onInsertPrompt, composerOnTop = false, onReadingHistory }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Follow new output only while the reader is at the bottom; scrolling up to
   // read earlier turns must not be yanked back on every streamed chunk.
@@ -330,6 +332,7 @@ export const ConversationView: React.FC<{
     stickToBottomRef.current = distance < STICK_THRESHOLD;
     const jump = distance > STICK_THRESHOLD * 3;
     setShowJump((prev) => (prev === jump ? prev : jump));
+    onReadingHistory?.(jump);
   };
 
   const jumpToLatest = () => {

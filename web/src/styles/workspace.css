@@ -437,6 +437,73 @@
 
 /* ================================================================== Tabs */
 
+/* Header folded while reading back through the conversation. Both are only hidden, so the
+   title being edited and open menus keep their state when the header comes back. */
+.ws-root.is-header-compact > .ws-header,
+.ws-root.is-header-compact > .ws-tabs-bar {
+  display: none;
+}
+
+.ws-strip {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 var(--space-3) 0 var(--space-5);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: var(--text-sm);
+}
+
+.ws-strip-mark {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.ws-strip-title {
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  font-size: var(--text-base);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-strip-title:hover {
+  background: var(--surface-2);
+}
+
+.ws-strip-branch {
+  min-width: 0;
+}
+
+.ws-strip-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.ws-strip-bar {
+  width: 48px;
+}
+
 .ws-tabs-bar {
   display: flex;
   align-items: center;
@@ -2545,6 +2612,15 @@ button.ws-sheet-row:active:not(:disabled) {
   .ws-tabs-bar {
     height: 38px;
     padding: 0 var(--space-3);
+  }
+
+  .ws-strip {
+    padding: 0 var(--space-2) 0 var(--space-1);
+  }
+
+  .ws-strip-mark,
+  .ws-strip-branch {
+    display: none;
   }
 
   .ws-context-label {
