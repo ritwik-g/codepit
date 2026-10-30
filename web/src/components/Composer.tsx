@@ -337,7 +337,11 @@ export const Composer: React.FC<{
       className={cx('ws-composer-dock', compact && 'is-compact')}
       onSubmit={handleSendPrompt}
       noValidate
-      onFocus={() => setFocused(true)}
+      // Only the message box opens it: a click on a queued message's button must not reflow
+      // the dock under the pointer, which would lose the click
+      onFocus={(e) => {
+        if ((e.target as Element).closest('.ws-composer')) setFocused(true);
+      }}
       onBlur={(e) => {
         // Moving between the textarea and the toolbar keeps it open
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
