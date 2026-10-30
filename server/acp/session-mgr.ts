@@ -829,6 +829,8 @@ export class SessionManager extends EventEmitter {
         : {}),
       rateLimits: (agent.id === 'claude' || agent.provider === 'anthropic') ? getClaudeRateLimits() : undefined,
       autoCompact: readAutoCompactDefault(),
+      // Claude in Chrome starts on; the composer's settings menu turns it off per session
+      ...(agent.id === 'claude' ? { chrome: true } : {}),
     };
 
     store.save(session);
