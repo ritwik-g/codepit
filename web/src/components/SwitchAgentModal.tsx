@@ -19,15 +19,15 @@ type ContextMode = 'compact' | 'full' | 'none';
 const CONTEXT_OPTIONS: Array<{ value: ContextMode; title: string; description: string; icon: IconName; recommended?: boolean }> = [
   {
     value: 'compact',
-    title: 'Summary',
-    description: 'The last few turns, trimmed, after any compaction summary.',
+    title: 'Since checkpoint',
+    description: 'The latest compact summary, when available, plus every conversation turn and tool result after it. If there is no summary, it gets the whole conversation.',
     icon: 'layers',
     recommended: true,
   },
   {
     value: 'full',
-    title: 'Recent messages',
-    description: 'The last few turns, word for word.',
+    title: 'Recent turns',
+    description: 'The last four conversation turns, with tool names.',
     icon: 'message',
   },
   {
@@ -39,8 +39,8 @@ const CONTEXT_OPTIONS: Array<{ value: ContextMode; title: string; description: s
 ];
 
 const CONTEXT_LABEL: Record<ContextMode, string> = {
-  compact: 'Summary of earlier turns',
-  full: 'Recent messages, word for word',
+  compact: 'Checkpoint summary + all later conversation',
+  full: 'Last four turns',
   none: 'No conversation, only the project',
 };
 

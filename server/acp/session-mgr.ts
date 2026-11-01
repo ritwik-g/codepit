@@ -29,8 +29,8 @@ import type { AcpSession, ContextSentRecord, PendingContext, LimitHit, LimitResu
 
 /**
  * Format conversation history into a structured briefing block for context transfer.
- * In 'compact' mode, internal thoughts and raw tool outputs are omitted, and responses
- * are distilled into key decisions, file changes, and instructions to save token context.
+ * In 'compact' mode, the latest compaction summary and every later user/agent turn are
+ * transferred with tool inputs and results. In 'full' mode, only recent turns are sent.
  * `catchUp` is for an agent session continued after other agents (`by`) handled the
  * conversation: the turns are only the ones it missed, and the header says so.
  */
@@ -46,8 +46,6 @@ export function buildSessionHistory(
   opts?: HistoryOptions
 ): { text: string; turnCount: number; includesSummary: boolean } {
   const compact = opts?.compact !== false;
-  const maxTurns = opts?.maxTurns ?? (compact ? 6 : 4);
-
   // The latest compaction summary stands in for every turn before it; only later turns are listed
   const checkpoint = latestCompaction(turns);
   const relevantTurns = turns.slice(checkpoint ? checkpoint.index + 1 : 0).filter(
@@ -56,6 +54,9 @@ export function buildSessionHistory(
 
   if (relevantTurns.length === 0 && !checkpoint) return { text: '', turnCount: 0, includesSummary: false };
 
+  // The default compact handover now carries every turn after the checkpoint. Callers
+  // that need a bounded preview (for example, an explicit recent-turn handover) pass maxTurns.
+  const maxTurns = opts?.maxTurns ?? (compact ? relevantTurns.length : 4);
   const slice = relevantTurns.slice(-maxTurns);
   const catchUpBy = opts?.catchUp && (opts.catchUp.by.length > 0 ? opts.catchUp.by.join(' and ') : 'another agent');
   // A catch-up claims to cover everything since; when it is cut, it says how much is left out
@@ -63,13 +64,14 @@ export function buildSessionHistory(
   const catchUpTurns = leftOut > 0
     ? `These are the last ${slice.length} of the ${relevantTurns.length} turns since then (the ${leftOut} before them are left out)`
     : 'These are the turns since then';
+  const coverageLabel = compact ? 'Complete Since Checkpoint' : 'Recent Turns';
   const lines: string[] = catchUpBy
     ? [
-        `[Catch-up Since You Last Took Part (${compact ? 'Compacted' : 'Recent Turns'})]`,
+        `[Catch-up Since You Last Took Part (${coverageLabel})]`,
         `You still have this conversation up to where you last took part. ${catchUpTurns}, while ${catchUpBy} handled the conversation:`,
       ]
     : [
-        `[Prior Conversation Context (${compact ? 'Compacted' : 'Recent Turns'})]`,
+        `[Prior Conversation Context (${coverageLabel})]`,
         `The following is context from prior turns in this session to maintain continuity:`,
       ];
   if (checkpoint) {
@@ -80,21 +82,41 @@ export function buildSessionHistory(
   for (const turn of slice) {
     if (turn.role === 'user') {
       lines.push(`- User: "${(turn.content || '').trim()}"`);
+      if (turn.attachments?.length) {
+        lines.push(`  Attachments: ${turn.attachments.map((a) => `${a.name} (${a.mimeType})`).join(', ')}`);
+      }
     } else if (turn.role === 'agent') {
       const parts: string[] = [];
-      if (turn.content) {
-        let text = turn.content.trim();
-        if (compact && text.length > 250) {
-          text = text.slice(0, 250) + '...';
-        }
-        parts.push(text);
-      }
       if (turn.toolCalls && turn.toolCalls.length > 0) {
-        const toolsList = turn.toolCalls
-          .map((tc) => tc.title || tc.kind || 'Action')
-          .slice(0, compact ? 3 : 5)
-          .join(', ');
-        parts.push(`[Executed: ${toolsList}${turn.toolCalls.length > (compact ? 3 : 5) ? '...' : ''}]`);
+        if (compact) {
+          const calls = new Map(turn.toolCalls.map((call) => [call.id, call]));
+          const included = new Set<string>();
+          for (const segment of turn.segments || []) {
+            if (segment.kind === 'text' && segment.text.trim()) parts.push(segment.text.trim());
+            else if (segment.kind === 'peer' && segment.text.trim()) parts.push(`[Message from ${segment.fromName || segment.from}]: ${segment.text.trim()}`);
+            else if (segment.kind === 'tool') {
+              const call = calls.get(segment.toolCallId);
+              if (call) {
+                parts.push(formatHandoverToolCall(call));
+                included.add(call.id);
+              }
+            }
+          }
+          // Older turns may not have ordered segments; retain their complete text and all calls.
+          if (!turn.segments?.some((segment) => segment.kind === 'text') && turn.content) parts.unshift(turn.content.trim());
+          for (const call of turn.toolCalls) {
+            if (!included.has(call.id)) parts.push(formatHandoverToolCall(call));
+          }
+        } else {
+          if (turn.content) parts.push(turn.content.trim());
+          const toolsList = turn.toolCalls
+            .map((tc) => tc.title || tc.kind || 'Action')
+            .slice(0, 5)
+            .join(', ');
+          parts.push(`[Executed: ${toolsList}${turn.toolCalls.length > 5 ? '...' : ''}]`);
+        }
+      } else if (turn.content) {
+        parts.push(turn.content.trim());
       }
       if (parts.length > 0) {
         lines.push(`- Assistant: ${parts.join(' ')}`);
@@ -104,6 +126,21 @@ export function buildSessionHistory(
 
   lines.push('---');
   return { text: lines.join('\n'), turnCount: slice.length, includesSummary: Boolean(checkpoint) };
+}
+
+/** Preserve tool evidence in a model handover; private reasoning is deliberately excluded. */
+function formatHandoverToolCall(call: ToolCallRecord): string {
+  const lines = [`[Tool: ${call.title || call.kind || 'Action'}${call.toolName ? ` (${call.toolName})` : ''} · ${call.status}]`];
+  if (call.description) lines.push(`Description: ${call.description}`);
+  if (call.input !== undefined) lines.push(`Input: ${JSON.stringify(call.input, null, 2)}`);
+  if (call.output) lines.push(`Output:\n${call.output}`);
+  if (call.error) lines.push(`Error:\n${call.error}`);
+  if (call.diffs?.length) {
+    lines.push(`File changes:\n${call.diffs.map((d) => `${d.path}\n${d.newText}`).join('\n')}`);
+  }
+  if (call.subagentText) lines.push(`Subagent response:\n${call.subagentText}`);
+  if (call.backgroundSummary) lines.push(`Background result: ${call.backgroundSummary}`);
+  return lines.join('\n');
 }
 
 /** The model to stamp on an agent turn: the one the agent runs when it refused the chosen one. */
@@ -551,7 +588,7 @@ export class SessionManager extends EventEmitter {
             this.ownTurns.delete(session.id);
             session.state = 'needs_you';
             changed = true;
-            this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted' });
+            this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted', session: turnCompletedPatch(session) });
           } else if (host?.isTurnInFlight && Date.now() - host.lastActivityAt > STALE_TURN_MS) {
             console.warn(`[session-mgr] Turn on ${session.id} silent for ${STALE_TURN_MS / 60_000}m; cancelling`);
             this.cancelPrompt(session.id, 'silent turn').catch(() => {});
@@ -572,7 +609,7 @@ export class SessionManager extends EventEmitter {
         if (session.state === 'crashed') {
           session.state = 'needs_you';
           changed = true;
-          this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted' });
+          this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted', session: turnCompletedPatch(session) });
         }
 
         // Check snooze expiry
@@ -1179,7 +1216,7 @@ export class SessionManager extends EventEmitter {
       s.pendingPermission = perm;
       s.state = 'blocked';
       store.save(s);
-      this.emit('permissionRequested', { sessionId: s.id, permission: perm });
+      this.emit('permissionRequested', { sessionId: s.id, permission: perm, state: s.state });
       this.emit('sessionsUpdated', this.listSessions());
     });
 
@@ -1189,7 +1226,7 @@ export class SessionManager extends EventEmitter {
       s.pendingPermission = null;
       if (!info?.cancelled) s.state = 'working';
       store.save(s);
-      this.emit('permissionResolved', { sessionId: s.id, permId });
+      this.emit('permissionResolved', { sessionId: s.id, permId, state: s.state });
       this.emit('sessionsUpdated', this.listSessions());
     });
 
@@ -1249,7 +1286,7 @@ export class SessionManager extends EventEmitter {
       s.state = 'needs_you';
       s.lastTurnEndedAt = Date.now();
       store.save(s, { now: true });
-      this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted' });
+      this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted', session: turnCompletedPatch(s) });
       this.emit('sessionsUpdated', this.listSessions());
     });
 
@@ -1262,7 +1299,7 @@ export class SessionManager extends EventEmitter {
       s.state = 'needs_you';
       s.lastTurnEndedAt = Date.now();
       store.save(s, { now: true });
-      this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted' });
+      this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted', session: turnCompletedPatch(s) });
       this.emit('sessionsUpdated', this.listSessions());
 
       // Update git in background without blocking state transition
@@ -1342,7 +1379,7 @@ export class SessionManager extends EventEmitter {
       }
       activeAgentTurn = null;
       store.save(s);
-      this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted' });
+      this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted', session: turnCompletedPatch(s) });
       this.emit('sessionsUpdated', this.listSessions());
     });
 
@@ -1386,7 +1423,7 @@ export class SessionManager extends EventEmitter {
         s.state = 'needs_you';
         clearPendingRequests(s);
         store.save(s);
-        this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted' });
+        this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted', session: turnCompletedPatch(s) });
         this.emit('sessionsUpdated', this.listSessions());
       }
     });
@@ -1527,7 +1564,7 @@ export class SessionManager extends EventEmitter {
       if (s && (s.state === 'working' || s.state === 'crashed')) {
         s.state = 'needs_you';
         store.save(s, { now: true });
-        this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted', session: s });
+        this.emit('sessionStream', { sessionId: s.id, type: 'turnCompleted', session: turnCompletedPatch(s) });
         this.emit('sessionsUpdated', this.listSessions());
       }
       // A stopped or failed turn leaves the queue alone so the user decides what happens next
@@ -2049,7 +2086,7 @@ export class SessionManager extends EventEmitter {
       session.state = 'needs_you';
       clearPendingRequests(session);
       store.save(session);
-      this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted', session });
+      this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted', session: turnCompletedPatch(session) });
       this.emit('sessionsUpdated', this.listSessions());
     }
   }
@@ -3381,6 +3418,21 @@ function appendTextSegment(turn: TurnMessage, kind: 'text' | 'thought', text: st
 function withoutToolCalls(turn: TurnMessage): Omit<TurnMessage, 'toolCalls'> {
   const { toolCalls: _toolCalls, ...rest } = turn;
   return rest;
+}
+
+/**
+ * The minimal session fields the client needs when a turn ends. Sending these
+ * on every turnCompleted event lets the frontend update its local copy without
+ * a full GET /api/sessions/:id round-trip.
+ */
+function turnCompletedPatch(s: AcpSession): Pick<AcpSession, 'state' | 'usage' | 'lastTurnEndedAt' | 'pendingPermission' | 'pendingElicitation'> {
+  return {
+    state: s.state,
+    usage: s.usage,
+    lastTurnEndedAt: s.lastTurnEndedAt,
+    pendingPermission: s.pendingPermission,
+    pendingElicitation: s.pendingElicitation,
+  };
 }
 
 /** True when a text chunk extends the turn's last segment rather than starting a new message. */

@@ -302,17 +302,31 @@ export const App: React.FC = () => {
           if (['thought', 'message', 'toolCall', 'toolCallUpdate'].includes(msg.event || msg.type)) {
             setActiveSession((prev) => (prev && prev.id === currentSelectedId && prev.state !== 'working' ? { ...prev, state: 'working' } : prev));
           }
-          if (['turnCompleted', 'sessionStopped', 'sessionStarted', 'sessionSwitched', 'sessionCompacted', 'sessionRollback', 'backgroundSettled', 'resumed'].includes(msg.event || msg.type)) {
-            if (msg.event === 'turnCompleted' || msg.type === 'turnCompleted') {
-              setActiveSession((prev) => (prev && prev.id === currentSelectedId ? { ...prev, state: 'needs_you' } : prev));
-            }
+          const evtType = msg.event || msg.type;
+          if (evtType === 'turnCompleted') {
+            // msg.session carries the minimal patch (state, usage, lastTurnEndedAt, pendingPermission,
+            // pendingElicitation) — already applied above via the msg.session branch. No re-fetch needed.
+            fetchSessions();
+          } else if (['sessionStopped', 'sessionStarted', 'sessionSwitched', 'sessionCompacted', 'sessionRollback', 'backgroundSettled', 'resumed'].includes(evtType)) {
+            // These events restructure turns or change agent identity — a full re-fetch is still needed.
             fetchSessionDetail(currentSelectedId);
             fetchSessions();
           }
         }
-      } else if (['permissionRequested', 'permissionResolved', 'elicitationRequested', 'elicitationResolved'].includes(msg.type)) {
-        if (currentSelectedId && msg.sessionId === currentSelectedId) {
-          fetchSessionDetail(currentSelectedId);
+      } else if (msg.type === 'permissionRequested' && msg.sessionId === currentSelectedId) {
+        // Apply inline: no re-fetch needed
+        setActiveSession((prev) => (prev && prev.id === currentSelectedId
+          ? { ...prev, pendingPermission: msg.permission, state: msg.state ?? 'blocked' }
+          : prev));
+        fetchSessions();
+      } else if (msg.type === 'permissionResolved' && msg.sessionId === currentSelectedId) {
+        setActiveSession((prev) => (prev && prev.id === currentSelectedId
+          ? { ...prev, pendingPermission: null, state: msg.state ?? 'working' }
+          : prev));
+        fetchSessions();
+      } else if (['elicitationRequested', 'elicitationResolved'].includes(msg.type)) {
+        // Data already delivered via the sessionStream 'elicitation' event above; just refresh the list.
+        if (msg.sessionId === currentSelectedId) {
           fetchSessions();
         }
       } else if (msg.type === 'claudeRateLimits' && msg.rateLimits) {

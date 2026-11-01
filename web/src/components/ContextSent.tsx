@@ -25,7 +25,7 @@ const roughTokens = (text: string) => {
 };
 
 export function describeContext(c: ContextPreview): string {
-  const parts: string[] = [c.mode === 'full' ? 'Full' : 'Compact'];
+  const parts: string[] = [c.mode === 'full' ? 'Recent turns' : 'Since checkpoint'];
   if (c.reason === 'fork' && c.fromAgent) parts.push(`from ${c.fromAgent.replace(/ \(ACP\)$/, '')}`);
   if (c.includesSummary) parts.push('compaction summary');
   parts.push(`${c.turnCount} turn${c.turnCount === 1 ? '' : 's'}`);

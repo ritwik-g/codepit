@@ -16,8 +16,8 @@ import '../styles/agents.css';
 type HandoverMode = 'compact' | 'full' | 'none';
 
 const HANDOVER: Array<{ value: HandoverMode; label: string; title: string }> = [
-  { value: 'compact', label: 'Summary', title: 'The new agent session gets a summary of this conversation' },
-  { value: 'full', label: 'Recent turns', title: 'The new agent session gets the recent turns word for word' },
+  { value: 'compact', label: 'Since checkpoint', title: 'The new agent gets the latest compact summary, when available, plus every conversation turn and tool result after it. If there is no summary, it gets the whole conversation.' },
+  { value: 'full', label: 'Recent turns', title: 'The new agent gets the last four conversation turns and their tool names' },
   { value: 'none', label: 'Clean slate', title: 'The new agent session starts with nothing from this conversation' },
 ];
 

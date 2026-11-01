@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import { syncAgyMcpQuietly } from './mcp/agy-sync.js';
 import http from 'node:http';
 import path from 'node:path';
@@ -64,6 +65,9 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   loadStoredCredentials();
 
   const app = express();
+
+  // Compress all /api JSON responses — a big win over Wi-Fi/LAN since sessions can be several MB
+  app.use('/api', compression());
 
   // Agents' way to MCP servers CodePit signed in to. Ahead of the JSON parser: the body goes on as sent
   app.all('/mcp-oauth/:id', (req, res) => {
