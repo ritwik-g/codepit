@@ -20,7 +20,8 @@ const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const INSTRUCTIONS =
   'CodePit is the app running this session. Its tools start new sessions to hand work to (create_session), find and check on other ' +
   'sessions by CodePit id, title, agent session id or Claude session name (list_sessions, find_session, get_session), tag and link ' +
-  'sessions so related work is grouped (tag_session, link_sessions), and tell this session who it is (whoami). Every call is recorded ' +
+  'sessions so related work is grouped (tag_session, link_sessions), keep them in order (rename_session, set_note, prioritize_session, ' +
+  'snooze_session), stop the agents of sessions it started (stop_session), mark finished sessions for cleanup (mark_cleanup), and tell this session who it is (whoami). Every call is recorded ' +
   "in CodePit's audit log.";
 
 const MESSAGING_INSTRUCTIONS =
@@ -29,7 +30,11 @@ const MESSAGING_INSTRUCTIONS =
   'send_to_session tool, by the same name: CodePit starts that session again and delivers it.';
 
 /** What every session is told about the server; the messaging part only when send_to_session is offered. */
-export const instructionsFor = (settings: CodepitMcpSettings) => INSTRUCTIONS + (settings.allowMessaging ? MESSAGING_INSTRUCTIONS : '');
+const DELETE_INSTRUCTIONS =
+  ' delete_session deletes a session this one started, for good; prefer mark_cleanup, which the user can review and undo.';
+
+export const instructionsFor = (settings: CodepitMcpSettings) =>
+  INSTRUCTIONS + (settings.allowMessaging ? MESSAGING_INSTRUCTIONS : '') + (settings.allowDelete ? DELETE_INSTRUCTIONS : '');
 
 interface RpcMessage {
   jsonrpc?: string;

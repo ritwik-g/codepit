@@ -2,7 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { Button, Icon, Input, StatusDot } from '../ui';
 import type { SessionLinkKind, SessionSummary } from '../types';
-import { familyRoot, familyTree, folderName, relativeTime, sessionStatus } from './Sidebar';
+import { folderName, relativeTime, sessionStatus } from './Sidebar';
+import { familyRoot, familyTree } from '../sidebarGroups';
 
 // Dialogs for organising a session: how long to snooze it, its tags, and the sessions related to it.
 
@@ -44,16 +45,20 @@ export function toLocalInput(ts: number): string {
 
 export const SnoozeModal: React.FC<{
   snoozedUntil: number | null;
-  onSnooze: (until: number | null) => void;
+  /** The note saved with the current snooze or the reminder being put off, to start from. */
+  note?: string;
+  /** `note` is what the reminder will say when the snooze ends. */
+  onSnooze: (until: number | null, note?: string) => void;
   onClose: () => void;
-}> = ({ snoozedUntil, onSnooze, onClose }) => {
+}> = ({ snoozedUntil, note: initialNote, onSnooze, onClose }) => {
   const presets = useMemo(snoozePresets, []);
+  const [note, setNote] = useState(initialNote ?? '');
   const [custom, setCustom] = useState(() => toLocalInput(Date.now() + 2 * HOUR));
   const customTs = custom ? new Date(custom).getTime() : NaN;
   const customValid = Number.isFinite(customTs) && customTs > Date.now();
   const snoozed = Boolean(snoozedUntil && snoozedUntil > Date.now());
   const pick = (until: number | null) => {
-    onSnooze(until);
+    onSnooze(until, until === null ? undefined : note.trim() || undefined);
     onClose();
   };
 
@@ -65,7 +70,9 @@ export const SnoozeModal: React.FC<{
       icon="moon"
       heading="Snooze session"
       description={
-        snoozed ? `Snoozed until ${whenLabel(snoozedUntil!)}. It wakes up by itself then.` : 'It moves to the bottom of the list and wakes up by itself.'
+        snoozed
+          ? `Snoozed until ${whenLabel(snoozedUntil!)}. Then it comes back under Needs you and you get a notification.`
+          : 'It moves to the bottom of the list. When the time comes it is back under Needs you, with a notification, until you deal with it.'
       }
       footer={
         snoozed ? (
@@ -75,6 +82,17 @@ export const SnoozeModal: React.FC<{
         ) : undefined
       }
     >
+      <div className="snooze-note">
+        <label htmlFor="snooze-note">Remind me to (optional)</label>
+        <Input
+          id="snooze-note"
+          type="text"
+          placeholder="e.g. check the CI run, review the PR"
+          maxLength={500}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </div>
       <div className="snooze-presets">
         {presets.map((p) => (
           <button key={p.id} type="button" className="snooze-preset" onClick={() => pick(p.until)}>
@@ -99,6 +117,36 @@ export const SnoozeModal: React.FC<{
     </Modal>
   );
 };
+
+/**
+ * The card above the composer once a snooze has ended: what the user wanted to come back for,
+ * until they reply, put it off again or mark it done.
+ */
+export const ReminderBanner: React.FC<{
+  reminder: { at: number; note?: string };
+  onDone: () => void;
+  onSnoozeAgain: () => void;
+}> = ({ reminder, onDone, onSnoozeAgain }) => (
+  <section className="ws-approval ws-reminder" role="region" aria-label="Reminder">
+    <span className="ws-approval-icon" aria-hidden>
+      <Icon name="bell" size={16} />
+    </span>
+    <div className="ws-approval-body">
+      <div className="ws-approval-kicker">Reminder · {whenLabel(reminder.at)}</div>
+      <div className="ws-restore-text">{reminder.note || 'You asked to come back to this session.'}</div>
+    </div>
+    <div className="ws-approval-actions">
+      <span className="ws-approval-main">
+        <Button variant="secondary" size="sm" icon="moon" onClick={onSnoozeAgain}>
+          Remind me later…
+        </Button>
+        <Button variant="primary" size="sm" icon="check" onClick={onDone} title="Replying to the session also clears it">
+          Done
+        </Button>
+      </span>
+    </div>
+  </section>
+);
 
 /** Tags as the server keeps them: lower case, no #, spaces become dashes. */
 export function parseTags(text: string): string[] {

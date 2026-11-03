@@ -20,6 +20,8 @@ export interface CodepitMcpSettings {
   maxChildren: number;
   /** send_to_session: an agent may send messages into any other session, starting a stopped one. */
   allowMessaging: boolean;
+  /** delete_session: an agent may delete sessions it started. */
+  allowDelete: boolean;
 }
 
 export const DEFAULT_CODEPIT_MCP: CodepitMcpSettings = {
@@ -30,6 +32,7 @@ export const DEFAULT_CODEPIT_MCP: CodepitMcpSettings = {
   maxDepth: 3,
   maxChildren: 20,
   allowMessaging: false,
+  allowDelete: false,
 };
 
 const LIMITS = { maxDepth: [1, 10], maxChildren: [1, 100] } as const;
@@ -54,7 +57,7 @@ export function parseCodepitMcpSettings(body: unknown, base: CodepitMcpSettings)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Expected an object';
   const b = body as Record<string, unknown>;
   const out = { ...base };
-  for (const key of ['enabled', 'inheritTags', 'allowMessaging'] as const) {
+  for (const key of ['enabled', 'inheritTags', 'allowMessaging', 'allowDelete'] as const) {
     if (key in b) {
       if (typeof b[key] !== 'boolean') return `${key} must be true or false`;
       out[key] = b[key] as boolean;

@@ -78,7 +78,11 @@ class MockAcpAgent {
       promptText = JSON.stringify(params.prompt);
     }
 
-    const lower = promptText.toLowerCase();
+    // Behaviour follows the user's own request: a handover in front of it repeats earlier
+    // prompts ("ask me", "permission"), which must not set off those behaviours again
+    const marker = '[Active User Request]\n';
+    const at = promptText.lastIndexOf(marker);
+    const lower = (at === -1 ? promptText : promptText.slice(at + marker.length)).toLowerCase();
 
     // "background" starts a command that finishes after the turn, reported the way
     // Claude Code does it: AIR async_task_* updates tied to the tool call

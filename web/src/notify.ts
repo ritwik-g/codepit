@@ -45,6 +45,9 @@ interface Alert {
 export function sessionAlert(prev: SessionSummary | undefined, next: SessionSummary): Alert | null {
   if (!prev || next.user.cleanup) return null;
   const name = next.title || 'Session';
+  if (next.user.reminder && next.user.reminder.at !== prev.user.reminder?.at) {
+    return { title: `Time to revisit ${name}`, body: next.user.reminder.note || 'You asked to be reminded to come back to this session.', tag: `${next.id}:remind` };
+  }
   const waitingBefore = prev.state === 'blocked';
   if (next.state === 'blocked' && (!waitingBefore || prev.pendingElicitationTitle !== next.pendingElicitationTitle || prev.pendingPermissionTitle !== next.pendingPermissionTitle)) {
     if (next.hasPendingElicitation && !next.hasPendingPermission) {

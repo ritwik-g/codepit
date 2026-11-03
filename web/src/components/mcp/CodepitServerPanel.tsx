@@ -137,6 +137,12 @@ export const CodepitServerPanel: React.FC<{
           label="Let sessions message each other"
           description="Adds send_to_session: an agent can send a prompt into any other session, starting its agent again if it was stopped. Claude's SendMessage only reaches running sessions. Every message is in the event log."
         />
+        <Switch
+          checked={s.allowDelete}
+          onChange={(allowDelete) => save({ allowDelete })}
+          label="Let sessions delete the sessions they started"
+          description="Adds delete_session: an agent can delete a session it started, conversation and attachments included. It cannot be undone. Never a session it did not start, one still working, or one with sessions of its own. Every delete is in the audit log."
+        />
         <div className="cpm-limits">
           <LimitField label="Levels deep" hint="Sessions starting sessions" value={s.maxDepth} min={1} max={10} onSave={(maxDepth) => save({ maxDepth })} />
           <LimitField label="Per session" hint="Sessions one session may start" value={s.maxChildren} min={1} max={100} onSave={(maxChildren) => save({ maxChildren })} />

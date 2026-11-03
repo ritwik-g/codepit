@@ -333,6 +333,8 @@ export interface GitInfo {
   unpushedCommits: number;
   isClean: boolean;
   repoRoot: string;
+  /** The main clone this checkout belongs to: repoRoot itself, or the main clone of a worktree. Absent on older sessions. */
+  mainRoot?: string;
 }
 
 export interface TokenUsage {
@@ -351,6 +353,13 @@ export interface UserAnnotations {
   priority: 'p0' | 'p1' | 'p2' | null;
   pinned: boolean;
   snoozedUntil: number | null;
+  /** What to come back for, set with a snooze and shown with its reminder. */
+  snoozeNote?: string;
+  /**
+   * A snooze ended and the user has not dealt with it yet: the session counts as needing them
+   * until they reply, snooze it again or mark the reminder done.
+   */
+  reminder?: { at: number; note?: string } | null;
   tags: string[];
   cleanup: boolean;
   note?: string;
@@ -652,6 +661,8 @@ export interface SessionSummary {
   pendingPermissionTitle?: string;
   /** The agent is waiting for the user to answer a form; the title is the form's message, on one line. */
   hasPendingElicitation: boolean;
+  /** When the approval or question waiting on the user was asked. */
+  askedAt?: number;
   pendingElicitationTitle?: string;
   tokenCount: number;
   turnCount: number;

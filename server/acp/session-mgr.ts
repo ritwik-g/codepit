@@ -571,6 +571,7 @@ export class SessionManager extends EventEmitter {
         console.error('[session-mgr] Stopping idle agents failed:', err);
       }
       let anyChanged = false;
+      const woke: AcpSession[] = [];
       const sessions = store.getAll();
       for (const session of sessions) {
         let changed = false;
@@ -612,10 +613,9 @@ export class SessionManager extends EventEmitter {
           this.emit('sessionStream', { sessionId: session.id, type: 'turnCompleted', session: turnCompletedPatch(session) });
         }
 
-        // Check snooze expiry
-        if (session.user.snoozedUntil && session.user.snoozedUntil <= Date.now()) {
-          session.user.snoozedUntil = null;
+        if (wakeSnooze(session)) {
           changed = true;
+          woke.push(session);
         }
 
         // Refresh git info (getGitInfo returns a stable null for non-git directories)
@@ -627,7 +627,8 @@ export class SessionManager extends EventEmitter {
             (oldGit && newGit && (
               oldGit.uncommittedFiles !== newGit.uncommittedFiles ||
               oldGit.unpushedCommits !== newGit.unpushedCommits ||
-              oldGit.branch !== newGit.branch
+              oldGit.branch !== newGit.branch ||
+              oldGit.mainRoot !== newGit.mainRoot
             ))
           ) {
             session.git = newGit;
@@ -645,6 +646,8 @@ export class SessionManager extends EventEmitter {
       if (anyChanged) {
         this.emit('sessionsUpdated', this.listSessions());
       }
+      // An open session shows its reminder card at once
+      for (const s of woke) this.emit('sessionStream', { sessionId: s.id, type: 'reminder', session: { user: s.user, state: s.state } });
     }, 10_000);
   }
 
@@ -673,6 +676,7 @@ export class SessionManager extends EventEmitter {
       pendingPermissionTitle: s.pendingPermission?.title,
       hasPendingElicitation: Boolean(s.pendingElicitation),
       pendingElicitationTitle: s.pendingElicitation ? oneLine(s.pendingElicitation.message) : undefined,
+      askedAt: s.pendingPermission?.requestedAt ?? s.pendingElicitation?.requestedAt,
       tokenCount: s.usage.contextTokens || (s.usage.inputTokens + s.usage.outputTokens),
       turnCount: s.turns.length,
       model: s.model || getAgent(s.agentId)?.defaultModel,
@@ -1445,6 +1449,8 @@ export class SessionManager extends EventEmitter {
     // A message sent now replaces one waiting to be sent later, and resumes a limited session
     session.scheduledResume = null;
     session.limitHit = null;
+    // Replying is dealing with the reminder
+    if (session.user.reminder) session.user.reminder = null;
     // Any message starts a session that was waiting to be started
     delete session.pendingStart;
 
@@ -2235,7 +2241,7 @@ export class SessionManager extends EventEmitter {
    * Kills the ACP client host child process (SIGTERM -> SIGKILL) and releases the PTY terminal.
    * Marks context handoff as pending so the next prompt will automatically re-spawn the agent seamlessly.
    */
-  async stopSessionAgent(sessionId: string, opts: { idleHours?: number } = {}): Promise<AcpSession> {
+  async stopSessionAgent(sessionId: string, opts: { idleHours?: number; reason?: string } = {}): Promise<AcpSession> {
     const session = store.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
     const idle = opts.idleHours !== undefined;
@@ -2247,7 +2253,7 @@ export class SessionManager extends EventEmitter {
     // Read while Claude still lists it: once stopped, this is how the session is found by name
     const name = claudeSessionName(session.agentSessionId);
     if (name) session.lastAgentSessionName = name;
-    this.dropHost(sessionId, idle ? `Unused for ${idleLabel(opts.idleHours!)}` : 'Stopped by you', { idleHours: opts.idleHours });
+    this.dropHost(sessionId, idle ? `Unused for ${idleLabel(opts.idleHours!)}` : opts.reason ?? 'Stopped by you', { idleHours: opts.idleHours });
     ptyManager.release(`session-term-${sessionId}`);
 
     // Only a Stop the user made parks the session; an idle one keeps its place in the list
@@ -3341,6 +3347,11 @@ export class SessionManager extends EventEmitter {
     // A session marked for cleanup is not offered back
     const marked = updates.cleanup === true ? store.get(sessionId) : null;
     if (marked?.restore) delete marked.restore;
+    if (updates.snoozedUntil !== undefined) {
+      // Snoozing again puts a due reminder off; waking it by hand needs no reminder or note
+      updates = { ...updates, reminder: null };
+      if (updates.snoozedUntil === null) updates.snoozeNote = undefined;
+    }
     const updated = store.updateAnnotations(sessionId, updates);
     if (updated) {
       this.emit('sessionsUpdated', this.listSessions());
@@ -3396,6 +3407,19 @@ export function promptCacheExpiry(s: Pick<AcpSession, 'agentId' | 'model' | 'las
   const claude = /claude|anthropic/i.test(s.agentId) || /claude/i.test(s.model || '');
   if (!claude) return undefined;
   return s.lastTurnEndedAt + (process.env.ANTHROPIC_API_KEY ? CACHE_TTL_API_KEY_MS : CACHE_TTL_SUBSCRIPTION_MS);
+}
+
+/**
+ * End a snooze whose time has come. It becomes a reminder, with the note given when snoozing:
+ * the session needs the user until they reply, snooze it again or mark it done. True when it woke.
+ */
+export function wakeSnooze(s: AcpSession, now = Date.now()): boolean {
+  if (!s.user.snoozedUntil || s.user.snoozedUntil > now) return false;
+  const note = s.user.snoozeNote;
+  s.user.snoozedUntil = null;
+  delete s.user.snoozeNote;
+  s.user.reminder = { at: now, ...(note ? { note } : {}) };
+  return true;
 }
 
 /** Appends streamed text to the turn's last segment of the same kind and message, or starts a new one. */

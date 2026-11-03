@@ -51,12 +51,21 @@ export async function getGitInfo(cwd: string): Promise<GitInfo | null> {
 
     info.isClean = info.uncommittedFiles === 0 && info.unpushedCommits === 0;
 
-    // Discover repository root
+    // The checkout's root, and the main clone it belongs to (a worktree's main clone is another folder)
     try {
-      const { stdout: rootOut } = await exec('git', ['rev-parse', '--show-toplevel'], { cwd, timeout: 2000 });
-      info.repoRoot = rootOut.trim();
+      const { stdout: rootOut } = await exec('git', ['rev-parse', '--show-toplevel', '--path-format=absolute', '--git-common-dir'], { cwd, timeout: 2000 });
+      const [top, common] = rootOut.split('\n').map((l) => l.trim());
+      info.repoRoot = top || cwd;
+      info.mainRoot = mainCloneRoot(common, info.repoRoot);
     } catch {
-      info.repoRoot = cwd;
+      // git before 2.31 has no --path-format: the checkout's root still groups it
+      try {
+        const { stdout: rootOut } = await exec('git', ['rev-parse', '--show-toplevel'], { cwd, timeout: 2000 });
+        info.repoRoot = rootOut.trim() || cwd;
+      } catch {
+        info.repoRoot = cwd;
+      }
+      info.mainRoot = info.repoRoot;
     }
   } catch {
     // Not a git repository
@@ -66,4 +75,13 @@ export async function getGitInfo(cwd: string): Promise<GitInfo | null> {
 
   cache.set(cwd, { at: Date.now(), info });
   return info;
+}
+
+/**
+ * The main clone's folder from git's common dir: <main>/.git for the main clone and its
+ * worktrees. Anything else (a submodule's .git/modules/x, a bare repo) is its own repo.
+ */
+export function mainCloneRoot(commonDir: string | undefined, repoRoot: string): string {
+  if (commonDir && path.isAbsolute(commonDir) && path.basename(commonDir) === '.git') return path.dirname(commonDir);
+  return repoRoot;
 }

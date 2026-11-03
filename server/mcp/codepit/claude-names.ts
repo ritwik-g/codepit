@@ -57,6 +57,11 @@ export function sessionsByClaudeName(name: string): AcpSession[] {
   return [...live, ...stopped];
 }
 
+/** Read the registry afresh on the next lookup; for tests that write registry files. */
+export function forgetClaudeNames(): void {
+  cache = null;
+}
+
 /** The live Claude session's current name, by its session id. */
 export function claudeSessionName(sessionId: string | undefined): string | undefined {
   if (!sessionId) return undefined;

@@ -20,6 +20,8 @@ const PRIORITY_BOOST = {
 } as const;
 
 const PINNED_BOOST = 10_000;
+/** A snooze that ended ranks it with the sessions waiting on the user. */
+const REMINDER_BOOST = 150;
 const SNOOZED_PENALTY = -100_000;
 
 /** Background shells, workflows or async subagents still running after the turn ended. */
@@ -185,6 +187,11 @@ export function rankSession(session: AcpSession): RankResult {
   if (session.user.priority) {
     add(`You set priority ${session.user.priority.toUpperCase()}`, PRIORITY_BOOST[session.user.priority]);
     extra.push(`you gave it priority ${session.user.priority.toUpperCase()}`);
+  }
+  if (session.user.reminder && state !== 'snoozed') {
+    add('Your reminder is due', REMINDER_BOOST);
+    const note = session.user.reminder.note;
+    extra.push(note ? `you asked to come back to it (“${note}”)` : 'you asked to be reminded to come back to it');
   }
 
   if (state !== 'snoozed') {

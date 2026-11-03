@@ -22,7 +22,7 @@ import { cx, nextPriority, runningSubagents } from './sessionMeta';
 import { AgentsPanel, agentTaskCounts } from './AgentsView';
 import { AgentSessionNavContext, AgentTaskNavContext } from './agentTaskNav';
 import { AgentSessionsPanel } from './AgentSessionsView';
-import { SnoozeModal, TagsPanel, relatedSessionCount } from './SessionOrganize';
+import { ReminderBanner, SnoozeModal, TagsPanel, relatedSessionCount } from './SessionOrganize';
 import { PendingStartCard, WaitingChildrenCard } from './PendingStartCard';
 import { RestoreSessionBanner, isRestorable } from './RestorePrompt';
 import { ResumeAtModal, ResumeBanner } from './ResumeLater';
@@ -364,7 +364,7 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
       onSelect: handleCompactSession,
       disabled: !canCompact || compacting,
     },
-    { label: isSnoozed ? 'Wake session' : 'Snooze…', icon: 'moon', onSelect: handleToggleSnooze },
+    { label: isSnoozed ? 'Wake session' : 'Snooze and remind me…', icon: 'moon', onSelect: handleToggleSnooze },
     {
       label: scheduledResume?.armed ? 'Change resume time…' : session.state === 'working' ? 'Pause and resume later…' : 'Resume later…',
       icon: 'pause',
@@ -510,6 +510,13 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
             <WaitingChildrenCard waiting={waitingChildren} onSelectSession={onSelectSession} />
           ) : scheduledResume && session.state !== 'working' ? (
             <ResumeBanner key={session.id} sessionId={session.id} agentName={session.agentName} resume={scheduledResume} onPickTime={() => setShowResumeAt(true)} />
+          ) : session.user.reminder && session.state !== 'working' ? (
+            <ReminderBanner
+              key={session.id}
+              reminder={session.user.reminder}
+              onDone={() => updateAnnotations({ reminder: null })}
+              onSnoozeAgain={() => setShowSnooze(true)}
+            />
           ) : (
             restorable &&
             summary && <RestoreSessionBanner key={session.id} summary={summary} queuedCount={session.queuedPrompts?.length ?? 0} />
@@ -518,7 +525,10 @@ export const SessionDetail: React.FC<SessionDetailProps> = ({
       />
 
       {showSnooze && (
-        <SnoozeModal snoozedUntil={session.user.snoozedUntil} onSnooze={(until) => updateAnnotations({ snoozedUntil: until })} onClose={() => setShowSnooze(false)} />
+        <SnoozeModal
+          snoozedUntil={session.user.snoozedUntil}
+          note={session.user.snoozeNote ?? session.user.reminder?.note}
+          onSnooze={(until, note) => updateAnnotations(until === null ? { snoozedUntil: null } : { snoozedUntil: until, snoozeNote: note ?? '' })} onClose={() => setShowSnooze(false)} />
       )}
 
       {showResumeAt && (

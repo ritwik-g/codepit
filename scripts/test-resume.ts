@@ -308,10 +308,11 @@ async function main(): Promise<void> {
   const aReply = await ask(sw.id, 'back to you');
   check('the same agent session, continued', field(aReply, 'resumed') === 'true' && field(aReply, 'seen') === '2' && field(aReply, 'first') === 'remember', aReply);
   const caughtUp = lastSent(aSession);
-  // The other agent's reply quotes its own first prompt (its handoff), so look at where the list starts
-  // and for this agent's own reply ("first=remember ...") rather than for the words
+  // The other agent's reply quotes its own first prompt (its handoff, which lists this agent's turns),
+  // so look at where the list starts and at how many turns the catch-up says it carries
   const firstEntry = caughtUp.split('\n').find((l) => l.startsWith('- '));
-  check('caught up with only the turns it missed', firstEntry === '- User: "question for the other agent"' && !caughtUp.includes('first=remember'), caughtUp);
+  const catchUpRecord = sessionManager.getSession(sw.id)!.turns.filter((t) => t.role === 'user').at(-1)!.contextSent;
+  check('caught up with only the turns it missed', firstEntry === '- User: "question for the other agent"' && catchUpRecord?.turnCount === 2, { turnCount: catchUpRecord?.turnCount, caughtUp });
   check('under a catch-up header naming the other agent', caughtUp.startsWith('[Catch-up Since You Last Took Part') && caughtUp.includes('while Other test agent handled'), caughtUp);
   const records = sessionManager.getSession(sw.id)!.agentSessions!;
   const aRecord = records.find((r) => r.id === aSession)!;

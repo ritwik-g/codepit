@@ -545,6 +545,11 @@
   color: var(--text-3);
 }
 
+.sb-row-reminder {
+  display: inline-flex;
+  color: var(--warn);
+}
+
 .shell-prio.ui-badge {
   height: 16px;
   padding: 0 5px;
@@ -2081,6 +2086,18 @@
   font-size: var(--text-sm);
 }
 
+.snooze-note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+
+.snooze-note label {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
 .snooze-custom {
   display: flex;
   align-items: center;
@@ -2295,8 +2312,130 @@ button.tag-chip-label {
   flex-wrap: wrap;
 }
 
-.sb-filters > .ui-segmented {
+.sb-filters > .group-by-menu {
   flex-basis: 100%;
+}
+
+/* "Group by" picker: a labelled trigger with the modes in a popover below it */
+.group-by-menu {
+  position: relative;
+}
+
+.group-by-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 26px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-align: left;
+}
+
+.group-by-trigger:hover,
+.group-by-trigger.is-open {
+  border-color: var(--border-strong);
+}
+
+.group-by-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.group-by-trigger-key {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.group-by-trigger-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-by-trigger-chevron {
+  color: var(--text-3);
+}
+
+.group-by-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  padding: var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.group-by-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 40px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  text-align: left;
+}
+
+.group-by-item:hover,
+.group-by-item:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
+}
+
+.group-by-item[aria-checked='true'] {
+  color: var(--text);
+}
+
+.group-by-item-icon {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.group-by-item-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.group-by-item-label {
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+
+.group-by-item-desc {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+.group-by-item-check {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+@media (max-width: 768px) {
+  .group-by-trigger {
+    height: 36px;
+  }
+
+  .group-by-item {
+    min-height: 48px;
+  }
 }
 
 .sb-group-name {

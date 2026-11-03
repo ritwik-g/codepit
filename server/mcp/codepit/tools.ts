@@ -10,7 +10,7 @@ import { MAX_TAGS, normalizeTags } from '../../tags.js';
 import { claudeSessionName, sessionsByClaudeName } from './claude-names.js';
 import { logEvent, preview } from '../../event-log.js';
 import { readCodepitMcpSettings, type CodepitMcpSettings } from './settings.js';
-import type { AcpSession, SessionLink, SessionLinkKind, SessionSummary } from '../../types.js';
+import type { AcpSession, SessionLink, SessionLinkKind, SessionSummary, UserAnnotations } from '../../types.js';
 
 // The tools CodePit's MCP server offers. `caller` is always the session the request's
 // token belongs to; no argument can stand in for it.
@@ -36,6 +36,8 @@ interface ToolDef {
 const LINK_KINDS: SessionLinkKind[] = ['related', 'follow-up', 'blocked-by'];
 const MAX_PROMPT = 100_000;
 const MAX_TURN_TEXT = 4000;
+const MAX_NOTE = 2000;
+const MAX_SNOOZE_MINUTES = 90 * 24 * 60;
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const str = (description: string, extra: Record<string, unknown> = {}) => ({ type: 'string', description, ...extra });
@@ -155,6 +157,18 @@ function rootOf(id: string): string {
   return current;
 }
 
+/** Whether `descendantId` was started by `ancestorId`, directly or further down. */
+function startedBy(ancestorId: string, descendantId: string): boolean {
+  const seen = new Set<string>();
+  let current = store.get(descendantId)?.spawnedBy?.sessionId;
+  while (current && !seen.has(current)) {
+    if (current === ancestorId) return true;
+    seen.add(current);
+    current = store.get(current)?.spawnedBy?.sessionId;
+  }
+  return false;
+}
+
 /** The memory-graph stamp: [YYYY-MM-DD HH:MM] [repo:<main clone>] [name:<name>] [id:<agent session id>]. */
 function stampFor(s: AcpSession): string | undefined {
   if (!s.agentSessionId) return undefined;
@@ -209,6 +223,7 @@ const TOOLS: ToolDef[] = [
             maxDepth: settings.maxDepth,
             maxChildren: settings.maxChildren,
             messaging: settings.allowMessaging,
+            delete: settings.allowDelete,
           },
         },
       };
@@ -305,6 +320,13 @@ const TOOLS: ToolDef[] = [
         result: {
           ...row(summary),
           recap: s.recap,
+          note: s.user.note || undefined,
+          priority: s.user.priority ?? undefined,
+          pinned: Boolean(s.user.pinned),
+          snoozedUntil: s.user.snoozedUntil && s.user.snoozedUntil > Date.now() ? new Date(s.user.snoozedUntil).toISOString() : undefined,
+          snoozeNote: s.user.snoozedUntil && s.user.snoozedUntil > Date.now() ? s.user.snoozeNote : undefined,
+          reminder: s.user.reminder ? { at: new Date(s.user.reminder.at).toISOString(), note: s.user.reminder.note } : undefined,
+          cleanup: Boolean(s.user.cleanup),
           lastPrompt: s.lastPrompt.slice(0, MAX_TURN_TEXT),
           waitingForApproval: s.pendingPermission?.title,
           waitingForAnswer: s.pendingElicitation?.message,
@@ -426,6 +448,175 @@ const TOOLS: ToolDef[] = [
       if (next.length > MAX_TAGS) throw new ToolError(`A session can have at most ${MAX_TAGS} tags`);
       sessionManager.updateAnnotations(target.id, { tags: next });
       return { sessions: [target.id], result: { id: target.id, tags: next } };
+    },
+  },
+  {
+    name: 'mark_cleanup',
+    description:
+      "Mark a session (this one by default) for cleanup once its work is finished: CodePit moves it to the sidebar's Cleanup tab, " +
+      'leaves it out of list_sessions unless include_cleanup is true, and no longer offers to restore it after a restart. It is not ' +
+      'deleted and its agent is not stopped. Set cleanup to false to unmark it.',
+    inputSchema: obj({
+      id: str('The CodePit session id (default: this session)'),
+      cleanup: { type: 'boolean', description: 'true (default) to mark, false to unmark' },
+    }),
+    run: (caller, args) => {
+      const target = sessionArg(args, 'id', caller);
+      const cleanup = optBool(args, 'cleanup') ?? true;
+      if (cleanup && target.pendingStart) throw new ToolError('That session is waiting for the user to start it; the user can discard it in CodePit instead');
+      const was = Boolean(target.user.cleanup);
+      sessionManager.updateAnnotations(target.id, { cleanup });
+      return { sessions: [target.id], result: { id: target.id, title: target.title, cleanup, changed: was !== cleanup } };
+    },
+  },
+  {
+    name: 'snooze_session',
+    description:
+      'Snooze a session (this one by default) until a time, with a note saying what to come back for. It sinks to the bottom of ' +
+      "CodePit's list; when the snooze ends it counts as needing the user, with the note shown as a reminder. Use it while waiting on " +
+      'something outside CodePit (CI, a review, a deploy). Give minutes or until; set wake to true to end a snooze now.',
+    inputSchema: obj({
+      id: str('The CodePit session id (default: this session)'),
+      minutes: { type: 'integer', minimum: 1, maximum: MAX_SNOOZE_MINUTES, description: 'Snooze for this many minutes' },
+      until: str('Snooze until this time, ISO 8601 (e.g. 2026-11-04T09:00:00+05:30)'),
+      note: str('What to come back for, shown with the reminder'),
+      wake: { type: 'boolean', description: 'true ends the snooze now, without a reminder' },
+    }),
+    run: (caller, args) => {
+      const target = sessionArg(args, 'id', caller);
+      const minutes = optInt(args, 'minutes', 1, MAX_SNOOZE_MINUTES);
+      const until = optString(args, 'until', 100);
+      const note = optString(args, 'note', 500);
+      const wake = optBool(args, 'wake') ?? false;
+      if (wake) {
+        if (minutes !== undefined || until || note) throw new ToolError('wake takes no minutes, until or note');
+        sessionManager.updateAnnotations(target.id, { snoozedUntil: null });
+        return { sessions: [target.id], result: { id: target.id, snoozedUntil: null } };
+      }
+      if ((minutes === undefined) === !until) throw new ToolError('Give exactly one of minutes or until (or wake: true)');
+      const at = minutes !== undefined ? Date.now() + minutes * 60_000 : Date.parse(until!);
+      if (!Number.isFinite(at)) throw new ToolError('until must be an ISO 8601 time');
+      if (at <= Date.now()) throw new ToolError('until must be in the future');
+      if (at > Date.now() + MAX_SNOOZE_MINUTES * 60_000) throw new ToolError(`A snooze can last at most ${MAX_SNOOZE_MINUTES / 1440} days`);
+      sessionManager.updateAnnotations(target.id, { snoozedUntil: at, snoozeNote: note });
+      return { sessions: [target.id], result: { id: target.id, snoozedUntil: new Date(at).toISOString(), note } };
+    },
+  },
+  {
+    name: 'rename_session',
+    description: "Set a session's title (this one by default), as shown in CodePit's sidebar. Counts as a title the user chose: the agent's own titles no longer replace it.",
+    inputSchema: obj(
+      {
+        id: str('The CodePit session id (default: this session)'),
+        title: str('The new title: short, saying what the session is for'),
+      },
+      ['title']
+    ),
+    run: (caller, args) => {
+      const target = sessionArg(args, 'id', caller);
+      const title = optString(args, 'title', 200)?.replace(/\s+/g, ' ');
+      if (!title) throw new ToolError('title is required');
+      const s = store.get(target.id)!;
+      const was = s.title;
+      s.title = title;
+      s.titleSource = 'user';
+      store.save(s, { touch: false });
+      sessionManager.emit('sessionsUpdated', sessionManager.listSessions());
+      return { sessions: [s.id], result: { id: s.id, title, was } };
+    },
+  },
+  {
+    name: 'set_note',
+    description:
+      "Set the note on a session (this one by default), shown with it in CodePit: e.g. a handoff summary, where the work stands, or what is left. Replaces any note already there; an empty note clears it. get_session returns the current note.",
+    inputSchema: obj(
+      {
+        id: str('The CodePit session id (default: this session)'),
+        note: str(`The note, at most ${MAX_NOTE} characters; empty clears it`),
+      },
+      ['note']
+    ),
+    run: (caller, args) => {
+      const target = sessionArg(args, 'id', caller);
+      const v = args.note;
+      if (typeof v !== 'string') throw new ToolError('note must be text');
+      if (v.length > MAX_NOTE) throw new ToolError(`note is longer than ${MAX_NOTE} characters`);
+      const note = v.trim();
+      sessionManager.updateAnnotations(target.id, { note });
+      return { sessions: [target.id], result: { id: target.id, note } };
+    },
+  },
+  {
+    name: 'prioritize_session',
+    description: "Set a session's priority (p0 highest, p1, p2, or none) and whether it is pinned to the top of CodePit's list. This one by default.",
+    inputSchema: obj({
+      id: str('The CodePit session id (default: this session)'),
+      priority: str('p0, p1, p2 or none', { enum: ['p0', 'p1', 'p2', 'none'] }),
+      pinned: { type: 'boolean' },
+    }),
+    run: (caller, args) => {
+      const target = sessionArg(args, 'id', caller);
+      const priority = optString(args, 'priority', 10);
+      const pinned = optBool(args, 'pinned');
+      if (priority === undefined && pinned === undefined) throw new ToolError('Give priority, pinned or both');
+      if (priority !== undefined && !['p0', 'p1', 'p2', 'none'].includes(priority)) throw new ToolError('priority must be p0, p1, p2 or none');
+      const patch: Partial<UserAnnotations> = {};
+      if (priority !== undefined) patch.priority = priority === 'none' ? null : (priority as 'p0' | 'p1' | 'p2');
+      if (pinned !== undefined) patch.pinned = pinned;
+      const updated = sessionManager.updateAnnotations(target.id, patch)!;
+      return { sessions: [target.id], result: { id: target.id, priority: updated.user.priority ?? 'none', pinned: Boolean(updated.user.pinned) } };
+    },
+  },
+  {
+    name: 'stop_session',
+    description:
+      "Stop the agent of a session this one started (directly or further down), once its work is done, to free its memory. Its conversation is kept: a later message starts it again. A session in the middle of a turn is refused unless force is true, which cancels that turn. Only sessions this one started can be stopped.",
+    inputSchema: obj(
+      {
+        id: str('The CodePit session id'),
+        force: { type: 'boolean', description: 'Cancel a turn in progress and stop anyway (default false)' },
+      },
+      ['id']
+    ),
+    run: async (caller, args) => {
+      const target = sessionArg(args, 'id');
+      if (target.id === caller.id) throw new ToolError('A session cannot stop itself');
+      if (!startedBy(caller.id, target.id)) throw new ToolError(`${target.id} ("${target.title}") was not started by this session, so it cannot stop it`);
+      const force = optBool(args, 'force') ?? false;
+      if (!sessionManager.isAgentRunning(target.id)) return { sessions: [target.id], result: { id: target.id, stopped: false, note: 'Its agent was not running.' } };
+      if (sessionManager.isTurnInFlight(target.id) && !force) {
+        throw new ToolError('That session is in the middle of a turn. Wait for it (get_session shows its state), or set force to cancel the turn.');
+      }
+      await sessionManager.stopSessionAgent(target.id, { reason: `Stopped by the session "${caller.title}"` });
+      return { sessions: [target.id], result: { id: target.id, stopped: true } };
+    },
+  },
+  {
+    name: 'delete_session',
+    description:
+      'Delete a session this one started (directly or further down): its conversation, attachments and terminal go, and it cannot be ' +
+      'undone. Prefer mark_cleanup, which the user can review and undo; delete only scratch sessions whose work is finished and of no ' +
+      'further use. Refused for a session still in a turn, one that started sessions of its own (delete those first), or any session ' +
+      'this one did not start.',
+    inputSchema: obj(
+      {
+        id: str('The CodePit session id'),
+        confirm_title: str('The title of the session being deleted, exactly as get_session or list_sessions shows it, as a check against the wrong id'),
+      },
+      ['id', 'confirm_title']
+    ),
+    when: (settings) => settings.allowDelete,
+    run: (caller, args) => {
+      const target = sessionArg(args, 'id');
+      if (target.id === caller.id) throw new ToolError('A session cannot delete itself');
+      if (!startedBy(caller.id, target.id)) throw new ToolError(`${target.id} ("${target.title}") was not started by this session, so it cannot delete it`);
+      if (optString(args, 'confirm_title', 200) !== target.title) throw new ToolError(`confirm_title does not match: ${target.id} is titled "${target.title}"`);
+      if (sessionManager.isTurnInFlight(target.id)) throw new ToolError('That session is in the middle of a turn. Wait for it, or stop it with stop_session first.');
+      const kids = store.getAll().filter((s) => s.spawnedBy?.sessionId === target.id);
+      if (kids.length > 0) throw new ToolError(`That session started ${kids.length} session${kids.length === 1 ? '' : 's'} of its own (${kids.slice(0, 5).map((s) => s.id).join(', ')}); delete or keep those first`);
+      const title = target.title;
+      if (!sessionManager.deleteSession(target.id)) throw new ToolError('Could not delete the session');
+      return { sessions: [target.id], result: { id: target.id, title, deleted: true } };
     },
   },
   {

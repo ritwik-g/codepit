@@ -20,6 +20,7 @@ const { tokenFor } = await import('../server/mcp/codepit/access.js');
 const { parseCodepitMcpSettings, readCodepitMcpSettings, writeCodepitMcpSettings, DEFAULT_CODEPIT_MCP } = await import('../server/mcp/codepit/settings.js');
 const { readAudit } = await import('../server/mcp/codepit/audit.js');
 const { readEvents } = await import('../server/event-log.js');
+const { forgetClaudeNames } = await import('../server/mcp/codepit/claude-names.js');
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {
@@ -108,12 +109,13 @@ async function main(): Promise<void> {
     check('notification: 202', note.status === 202);
     const tools = await rpc(token, 'tools/list');
     const names = (tools.json?.result?.tools ?? []).map((t: any) => t.name);
-    check('tools listed', ['whoami', 'list_sessions', 'find_session', 'get_session', 'create_session', 'tag_session', 'link_sessions'].every((n) => names.includes(n)), names);
+    check('tools listed', ['whoami', 'list_sessions', 'find_session', 'get_session', 'create_session', 'tag_session', 'mark_cleanup', 'snooze_session', 'rename_session', 'set_note', 'prioritize_session', 'stop_session', 'link_sessions'].every((n) => names.includes(n)), names);
     check('unknown method', (await rpc(token, 'resources/list')).json?.error?.code === -32601);
 
     console.log('6. whoami and the Claude session name');
     const agentSessionId = sessionManager.getSession(parent.id)!.agentSessionId!;
     fs.writeFileSync(path.join(claudeDir, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: agentSessionId, name: 'factory-1a' }));
+    forgetClaudeNames(); // names are cached for two seconds
     const me = await tool(token, 'whoami');
     check('whoami is the caller', !me.isError && me.data.id === parent.id && me.data.agentSessionId === agentSessionId && me.data.tags.includes('fe-v1'), me);
     check('stamp', /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[repo:[^\]]+\] \[name:factory-1a\] \[id:[^\]]+\]$/.test(me.data.stamp), me.data.stamp);
@@ -178,6 +180,53 @@ async function main(): Promise<void> {
     check('unlink', unl.data.links.length === 0 && !store.get(ni.id)!.links);
     check('no self link', (await tool(token, 'link_sessions', { to: parent.id })).isError);
 
+    console.log('10b. mark_cleanup');
+    store.get(child.id)!.restore = { reason: 'test' } as any;
+    const mc = await tool(token, 'mark_cleanup', { id: child.id });
+    check('marks another session', !mc.isError && mc.data.cleanup === true && mc.data.changed === true && store.get(child.id)!.user.cleanup === true, mc);
+    check('no longer offered for restore', !store.get(child.id)!.restore);
+    check('left out of list_sessions', !(await tool(token, 'list_sessions', { scope: 'children' })).data.sessions.some((s: any) => s.id === child.id));
+    check('listed with include_cleanup', (await tool(token, 'list_sessions', { scope: 'children', include_cleanup: true })).data.sessions.some((s: any) => s.id === child.id));
+    check('marking again changes nothing', (await tool(token, 'mark_cleanup', { id: child.id })).data.changed === false);
+    const um = await tool(token, 'mark_cleanup', { id: child.id, cleanup: false });
+    check('unmark', !um.isError && store.get(child.id)!.user.cleanup === false && um.data.changed === true, um);
+    const self = await tool(tokenFor(ni.id), 'mark_cleanup', {});
+    check('defaults to the caller', !self.isError && self.data.id === ni.id && store.get(ni.id)!.user.cleanup === true, self);
+    await tool(tokenFor(ni.id), 'mark_cleanup', { cleanup: false });
+    check('bad cleanup value refused', (await tool(token, 'mark_cleanup', { cleanup: 'yes' })).isError);
+
+    console.log('10c. snooze, rename, note, priority');
+    const sz = await tool(token, 'snooze_session', { id: child.id, minutes: 30, note: 'CI should be green' });
+    const czu = store.get(child.id)!.user;
+    check('snooze by minutes with a note', !sz.isError && czu.snoozedUntil! > Date.now() + 29 * 60_000 && czu.snoozeNote === 'CI should be green', sz);
+    const snoozeTo = new Date(Date.now() + 2 * 3600_000).toISOString();
+    const sz2 = await tool(token, 'snooze_session', { id: child.id, until: snoozeTo });
+    check('snooze until a time', !sz2.isError && store.get(child.id)!.user.snoozedUntil === Date.parse(snoozeTo), sz2);
+    check('get_session shows the snooze', Boolean((await tool(token, 'get_session', { id: child.id, turns: 0 })).data.snoozedUntil));
+    check('both minutes and until refused', (await tool(token, 'snooze_session', { minutes: 5, until: snoozeTo })).isError);
+    check('a past time refused', (await tool(token, 'snooze_session', { until: '2020-01-01T00:00:00Z' })).isError);
+    check('a bad time refused', (await tool(token, 'snooze_session', { until: 'tomorrow' })).isError);
+    const wk = await tool(token, 'snooze_session', { id: child.id, wake: true });
+    check('wake', !wk.isError && store.get(child.id)!.user.snoozedUntil === null && !store.get(child.id)!.user.snoozeNote, wk);
+
+    const rn = await tool(token, 'rename_session', { id: child.id, title: '  Login   page v2 ' });
+    check('rename', !rn.isError && store.get(child.id)!.title === 'Login page v2' && store.get(child.id)!.titleSource === 'user', rn);
+    check('empty title refused', (await tool(token, 'rename_session', { title: '  ' })).isError);
+
+    const nt = await tool(token, 'set_note', { id: child.id, note: 'Form done; validation left' });
+    check('set_note', !nt.isError && store.get(child.id)!.user.note === 'Form done; validation left');
+    check('get_session shows the note', (await tool(token, 'get_session', { id: child.id, turns: 0 })).data.note === 'Form done; validation left');
+    check('empty note clears it', !(await tool(token, 'set_note', { id: child.id, note: '' })).isError && !store.get(child.id)!.user.note);
+    check('too long a note refused', (await tool(token, 'set_note', { note: 'x'.repeat(2001) })).isError);
+
+    const pr = await tool(token, 'prioritize_session', { id: child.id, priority: 'p0', pinned: true });
+    check('priority and pin', !pr.isError && store.get(child.id)!.user.priority === 'p0' && store.get(child.id)!.user.pinned === true, pr);
+    const pr2 = await tool(token, 'prioritize_session', { id: child.id, priority: 'none' });
+    check('priority cleared, pin kept', store.get(child.id)!.user.priority === null && pr2.data.pinned === true, pr2);
+    check('nothing to set refused', (await tool(token, 'prioritize_session', {})).isError);
+    check('bad priority refused', (await tool(token, 'prioritize_session', { priority: 'urgent' })).isError);
+    await tool(token, 'prioritize_session', { id: child.id, pinned: false });
+
     console.log('11. Limits');
     await api('PUT', '/codepit-mcp', { maxDepth: 1 });
     const deep = await tool(tokenFor(child.id), 'create_session', { prompt: 'grandchild' });
@@ -203,6 +252,7 @@ async function main(): Promise<void> {
     const offAgentId = sessionManager.getSession(off.id)!.agentSessionId!;
     const offReg = path.join(claudeDir, 'sessions', '999999.json');
     fs.writeFileSync(offReg, JSON.stringify({ pid: process.pid, sessionId: offAgentId, name: 'off-7c' }));
+    forgetClaudeNames();
     const sentByName = await tool(tokenFor(child.id), 'send_to_session', { name: 'off-7c', message: 'by name' });
     check('by Claude session name', !sentByName.isError && sentByName.data.id === off.id && sentByName.data.delivery === 'sent', sentByName);
     await idle(off.id);
@@ -210,6 +260,7 @@ async function main(): Promise<void> {
 
     await sessionManager.stopSessionAgent(off.id);
     fs.rmSync(offReg); // Claude takes a stopped session off its list
+    forgetClaudeNames();
     check('the name is kept when the agent stops', store.get(off.id)!.lastAgentSessionName === 'off-7c');
     const woken = await tool(tokenFor(child.id), 'send_to_session', { name: 'off-7c', message: 'wake up and look' });
     check('a stopped session is started and sent the message', !woken.isError && woken.data.delivery === 'started' && /started it again/.test(woken.data.note), woken);
@@ -247,6 +298,42 @@ async function main(): Promise<void> {
     const perOff = await api('GET', `/events?sessionId=${off.id}&limit=500`);
     check('events read per session over HTTP', perOff.json.events.length > 0 && perOff.json.events.every((e: any) => e.sessions.includes(off.id)), perOff.json);
     check('owner-only event log', (fs.statSync(path.join(testAppDir, 'logs', `events-${new Date().toISOString().slice(0, 10)}.jsonl`)).mode & 0o777) === 0o600);
+
+    console.log('12c. stop_session');
+    check('cannot stop a session it did not start', (await tool(tokenFor(child.id), 'stop_session', { id: parent.id })).isError);
+    check('cannot stop itself', (await tool(token, 'stop_session', { id: parent.id })).isError);
+    await idle(child.id);
+    if (!sessionManager.isAgentRunning(child.id)) {
+      await tool(token, 'send_to_session', { id: child.id, message: 'wake' });
+      await idle(child.id);
+    }
+    check('child running before the stop', sessionManager.isAgentRunning(child.id));
+    const st = await tool(token, 'stop_session', { id: child.id });
+    check('stops a child', !st.isError && st.data.stopped === true && !sessionManager.isAgentRunning(child.id), st);
+    check('logged as stopped by the parent', readEvents({ limit: 1000 }).some((e) => e.kind === 'agent.stopped' && e.session?.sessionId === child.id && e.reason === `Stopped by the session "${parent.title}"`));
+    const st2 = await tool(token, 'stop_session', { id: child.id });
+    check('already stopped is not an error', !st2.isError && st2.data.stopped === false, st2);
+
+    console.log('12d. delete_session');
+    check('hidden until allowed', (await tool(token, 'delete_session', { id: child.id, confirm_title: store.get(child.id)!.title })).isError && store.get(child.id) !== undefined);
+    check('hidden from tools/list', !(await rpc(token, 'tools/list')).json.result.tools.some((t: any) => t.name === 'delete_session'));
+    await api('PUT', '/codepit-mcp', { allowDelete: true });
+    check('listed once allowed', (await rpc(token, 'tools/list')).json.result.tools.some((t: any) => t.name === 'delete_session'));
+    const grand = await tool(tokenFor(child.id), 'create_session', { prompt: 'scratch', title: 'Scratch', report_back: false });
+    await idle(grand.data.id);
+    const childTitle = store.get(child.id)!.title;
+    check('not one it did not start', (await tool(tokenFor(child.id), 'delete_session', { id: parent.id, confirm_title: parent.title })).isError && store.get(parent.id) !== undefined);
+    check('not itself', (await tool(token, 'delete_session', { id: parent.id, confirm_title: store.get(parent.id)!.title })).isError);
+    const wrongTitle = await tool(token, 'delete_session', { id: grand.data.id, confirm_title: 'Something else' });
+    check('a wrong confirm_title is refused', wrongTitle.isError && /does not match/.test(wrongTitle.text) && store.get(grand.data.id) !== undefined, wrongTitle.text);
+    const withKids = await tool(token, 'delete_session', { id: child.id, confirm_title: childTitle });
+    check('not one with sessions of its own', withKids.isError && withKids.text.includes(grand.data.id) && store.get(child.id) !== undefined, withKids.text);
+    const delGrand = await tool(token, 'delete_session', { id: grand.data.id, confirm_title: 'Scratch' });
+    check('deletes a session further down', !delGrand.isError && delGrand.data.deleted === true && !store.get(grand.data.id), delGrand);
+    const delChild = await tool(token, 'delete_session', { id: child.id, confirm_title: childTitle });
+    check('deletes a child once it has none', !delChild.isError && !store.get(child.id), delChild);
+    check('the delete is in the event log', readEvents({ limit: 1000 }).some((e) => e.kind === 'session.deleted' && e.session?.sessionId === child.id));
+    await api('PUT', '/codepit-mcp', { allowDelete: false });
 
     console.log('13. Turned off');
     await api('PUT', '/codepit-mcp', { enabled: false });

@@ -92,11 +92,14 @@ await test('the old local-only compaction turn (role system) is no longer droppe
 
 await test('a cut catch-up says turns are left out; a whole one does not', () => {
   const turns = Array.from({ length: 10 }, (_, i) => (i % 2 ? agent(`a${i}`, `ANSWER-${i}`) : user(`u${i}`, `QUESTION-${i}`)));
-  const cut = formatSessionHistory(turns, { catchUp: { by: ['Codex'] } });
+  // The default handover carries every turn since the checkpoint
+  const whole = formatSessionHistory(turns, { catchUp: { by: ['Codex'] } });
+  assert.ok(whole.includes('These are the turns since then, while Codex handled'), whole);
+  assert.ok(whole.includes('QUESTION-0') && whole.includes('ANSWER-9'), whole);
+  // A caller that caps it says how many it left out
+  const cut = formatSessionHistory(turns, { catchUp: { by: ['Codex'] }, maxTurns: 6 });
   assert.ok(cut.includes('the last 6 of the 10 turns since then (the 4 before them are left out)'), cut);
   assert.ok(!cut.includes('QUESTION-0') && cut.includes('ANSWER-9'));
-  const whole = formatSessionHistory(turns.slice(-4), { catchUp: { by: ['Codex'] } });
-  assert.ok(whole.includes('These are the turns since then, while Codex handled'), whole);
 });
 
 await test('no turns and no summary gives nothing to hand off', () => {
@@ -256,7 +259,10 @@ try {
     await sessionManager.sendPrompt(s.id, 'Carry on please');
     await waitForIdle(s.id);
     const lastThought = sessionManager.getSession(s.id)!.turns.filter((t) => t.role === 'agent').at(-1)!.thoughts || '';
-    assert.equal(count(lastThought, summary.slice(0, 60)), 1);
+    // The mock gives the same canned reply every time, so a later reply can repeat the summary's
+    // text: the summary section itself must be there once
+    assert.equal(count(lastThought, 'Summary of the conversation so far'), 1);
+    assert.ok(lastThought.includes(`compacted):\n${summary.slice(0, 60)}`), 'the summary follows its heading');
     assert.ok(lastThought.includes('What was the codeword'), 'turns after the boundary are included');
     assert.ok(!lastThought.includes('Remember the codeword PAPAYA'));
   });

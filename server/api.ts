@@ -763,6 +763,16 @@ export function parseAnnotations(body: unknown): Partial<UserAnnotations> | stri
     if (b.snoozedUntil !== null && !(typeof b.snoozedUntil === 'number' && Number.isFinite(b.snoozedUntil))) return 'snoozedUntil must be a time or null';
     out.snoozedUntil = b.snoozedUntil as number | null;
   }
+  if ('snoozeNote' in b) {
+    if (b.snoozeNote !== undefined && b.snoozeNote !== null && typeof b.snoozeNote !== 'string') return 'snoozeNote must be text';
+    const note = typeof b.snoozeNote === 'string' ? b.snoozeNote.trim().slice(0, 500) : '';
+    out.snoozeNote = note || undefined;
+  }
+  // Only clearing it here ("Done"); a reminder is set by the snooze ending
+  if ('reminder' in b) {
+    if (b.reminder !== null) return 'reminder can only be cleared (null)';
+    out.reminder = null;
+  }
   if ('note' in b) {
     if (typeof b.note !== 'string') return 'note must be text';
     out.note = b.note.slice(0, 2000);

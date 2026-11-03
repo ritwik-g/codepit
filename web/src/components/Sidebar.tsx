@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { LimitHit, SessionSummary } from '../types';
 import { VendorIcon } from './VendorLogos';
-import { Badge, Button, Icon, IconButton, Input, Kbd, Segmented, Spinner, StatusDot, type Tone } from '../ui';
+import { Badge, Button, Icon, IconButton, Input, Kbd, Spinner, StatusDot, type Tone } from '../ui';
 import { ThemeMenu } from './ThemeMenu';
 import { BrandMark } from './BrandMark';
 import { formatTokens, sessionPricing } from '../pricing';
 import { api } from '../api';
 import { RestoreAllBar, isRestorable } from './RestorePrompt';
+import { GroupByMenu } from './GroupByMenu';
+import { groupSessions, isGroupBy, isIdleStopped, isUnseen, isWorking, needsAttention, type GroupBy } from '../sidebarGroups';
 
 // ------------------------------------------------------------------ helpers
 // Shared by the sidebar, the command palette and the home dashboard.
@@ -24,10 +26,12 @@ export interface SessionStatus {
 /** Label and tone for a session's state, per the table in DESIGN.md. */
 export function sessionStatus(
   s: Pick<SessionSummary, 'state' | 'isAgentRunning' | 'compacting' | 'workingInBackground'> &
-    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume' | 'limitHit' | 'pendingStart'>>
+    Partial<Pick<SessionSummary, 'hasPendingPermission' | 'hasPendingElicitation' | 'restore' | 'scheduledResume' | 'limitHit' | 'pendingStart' | 'user'>>
 ): SessionStatus {
   // Another session asked for it; it waits for the user to start it
   if (s.pendingStart) return { label: 'Waiting to start', tone: 'info', pulse: false };
+  // A snooze that ended: back for the user to deal with
+  if (s.user?.reminder && s.state !== 'blocked' && s.state !== 'working') return { label: 'Reminder', tone: 'warn', pulse: false };
   if (s.compacting && s.state !== 'blocked') return { label: 'Compacting', tone: 'accent', pulse: true };
   // Waiting to send a message later: after the usage limit resets, or when a pause ends
   const resume = s.scheduledResume;
@@ -67,9 +71,7 @@ export function sessionStatus(
   }
 }
 
-export const needsAttention = (s: SessionSummary) =>
-  Boolean(s.pendingStart) ||
-  s.state === 'blocked' || (s.state === 'needs_you' && !s.workingInBackground && !s.scheduledResume?.armed) || s.state === 'crashed';
+export { needsAttention, isUnseen, isWorking } from '../sidebarGroups';
 
 /** "Weekly limit", "5-hour limit": which usage limit a session stopped on. */
 export function limitName(hit: Pick<LimitHit, 'window'>): string {
@@ -92,12 +94,6 @@ export function shortTime(ts: number): string {
   return d.toLocaleString(undefined, sameDay ? { hour: 'numeric', minute: '2-digit' } : { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
-/** A finished turn the user has not looked at since, while nothing else runs. */
-export function isUnseen(s: SessionSummary): boolean {
-  if (s.state === 'snoozed' || isWorking(s)) return false;
-  return Boolean(s.lastTurnEndedAt && s.lastTurnEndedAt > (s.seenAt || 0));
-}
-
 /** Text filter: words match title, folder, agent, branch or a tag; "#tag" matches tags only. */
 export function matchesFilter(s: SessionSummary, query: string): boolean {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -109,6 +105,7 @@ export function matchesFilter(s: SessionSummary, query: string): boolean {
       s.cwd.toLowerCase().includes(w) ||
       s.agentName.toLowerCase().includes(w) ||
       Boolean(s.git?.branch && s.git.branch.toLowerCase().includes(w)) ||
+      Boolean(s.git?.mainRoot && s.git.mainRoot.toLowerCase().includes(w)) ||
       tags.some((t) => t.includes(w))
     );
   });
@@ -147,9 +144,6 @@ export function sessionVitals(s: SessionSummary, now: number): { context?: strin
   return out;
 }
 
-/** A turn is running, or work the agent started still runs after its turn ended. */
-export const isWorking = (s: SessionSummary) => s.state === 'working' || (s.state === 'needs_you' && Boolean(s.workingInBackground));
-
 /** Previews are one line of plain text; drop markdown markers. */
 export function plainText(md: string | undefined): string {
   return (md || '')
@@ -183,6 +177,9 @@ export function sessionPreview(s: SessionSummary): { text: string; approval: boo
   }
   if (s.hasPendingElicitation && s.pendingElicitationTitle) {
     return { text: `Answer: ${s.pendingElicitationTitle}`, approval: true, question: true };
+  }
+  if (s.user.reminder && s.state !== 'working') {
+    return { text: `Reminder: ${s.user.reminder.note || 'come back to this session'}`, approval: false, question: false };
   }
   return { text: plainText(s.recap || s.lastPrompt), approval: false, question: false };
 }
@@ -246,99 +243,13 @@ interface SidebarProps {
 const COLLAPSED_KEY = 'codepit_sidebar_collapsed';
 const GROUP_BY_KEY = 'codepit_sidebar_group_by';
 
-type GroupBy = 'status' | 'tag' | 'family';
-
 function loadGroupBy(): GroupBy {
   try {
     const v = localStorage.getItem(GROUP_BY_KEY);
-    return v === 'tag' || v === 'family' ? v : 'status';
+    return isGroupBy(v) ? v : 'status';
   } catch {
     return 'status';
   }
-}
-
-interface SidebarGroup {
-  id: string;
-  label: string;
-  items: SessionSummary[];
-  /** How far each row is indented: its depth under the group's first session. */
-  depth?: Map<string, number>;
-}
-
-/** The session at the top of a session's chain of parents, among the sessions shown. */
-export function familyRoot(id: string, byId: Map<string, SessionSummary>): string {
-  const seen = new Set<string>();
-  let current = id;
-  while (!seen.has(current)) {
-    seen.add(current);
-    const parent = byId.get(current)?.spawnedBy?.sessionId;
-    if (!parent || !byId.has(parent)) break;
-    current = parent;
-  }
-  return current;
-}
-
-/** A family's sessions in tree order (each followed by the sessions it started), with depths. */
-export function familyTree(rootId: string, members: SessionSummary[]): { order: SessionSummary[]; depth: Map<string, number> } {
-  const children = new Map<string, SessionSummary[]>();
-  for (const s of members) {
-    const parent = s.spawnedBy?.sessionId;
-    if (parent && s.id !== rootId) children.set(parent, [...(children.get(parent) ?? []), s]);
-  }
-  const order: SessionSummary[] = [];
-  const depth = new Map<string, number>();
-  const byId = new Map(members.map((s) => [s.id, s]));
-  const walk = (id: string, d: number) => {
-    const s = byId.get(id);
-    if (!s || depth.has(id)) return;
-    order.push(s);
-    depth.set(id, d);
-    for (const c of (children.get(id) ?? []).sort((a, b) => a.startedAt - b.startedAt)) walk(c.id, d + 1);
-  };
-  walk(rootId, 0);
-  return { order, depth };
-}
-
-function groupSessions(mode: GroupBy, shown: SessionSummary[], all: SessionSummary[]): SidebarGroup[] {
-  if (mode === 'tag') {
-    const byTag = new Map<string, SessionSummary[]>();
-    const untagged: SessionSummary[] = [];
-    for (const s of shown) {
-      const tags = s.user.tags ?? [];
-      if (tags.length === 0) untagged.push(s);
-      for (const t of tags) byTag.set(t, [...(byTag.get(t) ?? []), s]);
-    }
-    const groups: SidebarGroup[] = [...byTag.entries()]
-      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-      .map(([t, items]) => ({ id: `tag:${t}`, label: `#${t}`, items }));
-    if (untagged.length > 0) groups.push({ id: 'tag:', label: 'No tags', items: untagged });
-    return groups;
-  }
-  if (mode === 'family') {
-    // Roots come from every session, so a filtered-out parent still holds its family together
-    const byId = new Map(all.map((s) => [s.id, s]));
-    const families = new Map<string, SessionSummary[]>();
-    for (const s of shown) {
-      const root = familyRoot(s.id, byId);
-      families.set(root, [...(families.get(root) ?? []), s]);
-    }
-    const groups: SidebarGroup[] = [];
-    const alone: SessionSummary[] = [];
-    for (const [root, members] of families) {
-      if (members.length === 1 && members[0].id === root && !all.some((x) => x.spawnedBy?.sessionId === root)) {
-        alone.push(members[0]);
-        continue;
-      }
-      const { order, depth } = familyTree(root, members);
-      // Members whose parent is filtered out still show, at the top level
-      const rest = members.filter((m) => !depth.has(m.id));
-      for (const m of rest) depth.set(m.id, 1);
-      groups.push({ id: `family:${root}`, label: byId.get(root)?.title ?? 'Session', items: [...order, ...rest], depth });
-    }
-    if (alone.length > 0) groups.push({ id: 'family:', label: 'On their own', items: alone });
-    return groups;
-  }
-  return GROUPS.map((g) => ({ id: g.id, label: g.label, items: shown.filter(g.test) })).filter((g) => g.items.length > 0);
 }
 
 function loadCollapsed(): Set<string> {
@@ -363,7 +274,8 @@ const GROUPS: Array<{ id: string; label: string; test: (s: SessionSummary) => bo
   { id: 'needs_you', label: 'Needs you', test: (s) => needsAttention(s) && !s.pendingStart },
   { id: 'waiting_start', label: 'Waiting to start', test: (s) => Boolean(s.pendingStart) },
   { id: 'working', label: 'Working', test: isWorking },
-  { id: 'parked', label: 'Parked', test: (s) => s.state === 'parked' },
+  // Also agents CodePit stopped for being unused, once their last reply has been read
+  { id: 'parked', label: 'Parked', test: (s) => s.state === 'parked' || isIdleStopped(s) },
   { id: 'quiet', label: 'Idle', test: (s) => s.state === 'quiet' },
   { id: 'snoozed', label: 'Snoozed', test: (s) => s.state === 'snoozed' },
 ];
@@ -403,7 +315,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      try {
+        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      } catch {
+        // remembered for this visit only
+      }
       return next;
     });
   // Cache countdowns move on their own
@@ -425,7 +341,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
   const activeTab = tabs.find((t) => t.id === filterTab)!;
   const filteredSessions = textFiltered.filter(activeTab.test);
-  const groups = groupSessions(groupBy, filteredSessions, sessions);
+  const groups = groupSessions(groupBy, filteredSessions, sessions, GROUPS);
   const isHome = selectedId === null;
 
   return (
@@ -516,18 +432,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })}
         </div>
-        <Segmented<GroupBy>
-          label="Group sessions by"
-          size="sm"
-          block
-          value={groupBy}
-          onChange={setGroupBy}
-          options={[
-            { value: 'status', label: 'Status', title: 'Group by what each session needs' },
-            { value: 'tag', label: 'Tag', title: 'Group by tag; a session with several tags shows under each' },
-            { value: 'family', label: 'Family', title: 'Group sessions with the sessions they started' },
-          ]}
-        />
+        <GroupByMenu value={groupBy} onChange={setGroupBy} />
       </div>
 
       {filterOpen && (
@@ -573,9 +478,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className="sb-group-label"
                 aria-expanded={!isCollapsed}
                 onClick={() => toggleGroup(g.id)}
-                title={isCollapsed ? `Show ${g.label.toLowerCase()} sessions` : `Hide ${g.label.toLowerCase()} sessions`}
+                title={`${isCollapsed ? 'Show' : 'Hide'} the sessions in ${groupBy === 'status' ? g.label.toLowerCase() : g.label}${g.title ? `\n${g.title}` : ''}`}
               >
                 <Icon name="chevronDown" size={11} className="sb-group-chevron" />
+                {g.agentId && <VendorIcon agentId={g.agentId} size={13} />}
                 <span className="sb-group-name">{g.label}</span>
                 <span className="sb-group-count">{g.items.length}</span>
                 {groupBy !== 'status' && <GroupVitals items={g.items} />}
@@ -726,6 +632,11 @@ const SessionRow: React.FC<{
         </span>
         )}
         <span className="sb-row-title">{session.title}</span>
+        {session.user.reminder && session.state !== 'snoozed' && (
+          <span className="sb-row-reminder" title={`Reminder: ${session.user.reminder.note || 'come back to this session'}`}>
+            <Icon name="bell" size={11} />
+          </span>
+        )}
         {session.user.pinned && (
           <span className="sb-row-pin" title="Pinned">
             <Icon name="pin" size={11} />

@@ -2926,6 +2926,21 @@ button.ws-sheet-row:active:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+/* A snooze that ended: back for the user, in the warn tone of "Your turn" */
+.ws-approval.ws-reminder {
+  border-color: var(--warn-border, var(--border));
+  box-shadow: var(--shadow), inset 3px 0 0 var(--warn);
+}
+
+.ws-reminder .ws-approval-icon {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.ws-reminder .ws-approval-kicker {
+  color: var(--warn);
+}
+
 .resume-prompt-label {
   display: block;
   margin-bottom: var(--space-1);
