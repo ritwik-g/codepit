@@ -12,9 +12,11 @@ import {
   appendSubagentText,
   completeAsyncSubagent,
   endAgentTasks,
+  endOrphanedSubagents,
   readTranscriptEnd,
   settleEndedSubagents,
   stopAsyncSubagent,
+  SUBAGENT_ORPHANED,
   SUBAGENT_STOPPED,
   stopAgentTask,
   subagentStopRequest,
@@ -360,6 +362,43 @@ test('a subagent cut short in the agent is recorded as stopped, on the task and 
   assert.deepEqual(settleEndedSubagents(s, true), []);
   assert.equal(stopAsyncSubagent(s, 'a1', 'again'), null);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('foreground subagents of a stopped subagent are stopped with it, async ones are left to report', () => {
+  const s = session([agentTurn()]);
+  // A background reviewer, a lens agent it waits on, that agent's own child, and an async child
+  addCall(s, { id: 'r1', title: 'Reviewer', status: 'running', startedAt: 1, isSubagent: true });
+  update(s, 'r1', { status: 'completed', background: true, output: 'Async agent launched', agentOutputFile: '/tmp/r1.output' });
+  addCall(s, { id: 'l1', title: 'Lens 13', status: 'pending', startedAt: 2, isSubagent: true, parentToolUseId: 'r1' });
+  addCall(s, { id: 'g1', title: 'Grandchild', status: 'running', startedAt: 3, isSubagent: true, parentToolUseId: 'l1' });
+  addCall(s, { id: 'b1', title: 'Async child', status: 'running', startedAt: 4, isSubagent: true, parentToolUseId: 'r1' });
+  update(s, 'b1', { status: 'completed', background: true, output: 'Async agent launched', agentOutputFile: '/tmp/b1.output' });
+  assert.deepEqual(endOrphanedSubagents(s), [], 'nothing ends while the parent runs');
+
+  // The reviewer is stopped; the agent reports nothing for the agents under it
+  stopAsyncSubagent(s, 'r1', SUBAGENT_STOPPED, 10);
+  assert.deepEqual(endOrphanedSubagents(s).map((t) => t.id).sort(), ['g1', 'l1']);
+  const byId = (id: string) => s.agentTasks!.find((t) => t.id === id)!;
+  assert.equal(byId('l1').status, 'stopped');
+  assert.equal(byId('l1').summary, SUBAGENT_ORPHANED);
+  assert.equal(byId('l1').endedAt, 10);
+  assert.equal(byId('g1').status, 'stopped');
+  assert.equal(byId('b1').status, 'running', 'an async child reports its own end');
+  const lens = s.turns[0].toolCalls!.find((c) => c.id === 'l1')!;
+  assert.equal(lens.status, 'failed', 'its never-answered call no longer shows as pending');
+  assert.equal(lens.error, SUBAGENT_ORPHANED);
+  assert.deepEqual(endOrphanedSubagents(s), [], 'ended once');
+});
+
+test('a saved session with a subagent left running under an ended parent is repaired on load', () => {
+  const s = session([agentTurn()]);
+  addCall(s, { id: 'r1', title: 'Reviewer', status: 'running', startedAt: 1, isSubagent: true });
+  update(s, 'r1', { status: 'completed', background: true, output: 'Async agent launched', agentOutputFile: '/tmp/r1.output' });
+  addCall(s, { id: 'l1', title: 'Lens 13', status: 'pending', startedAt: 2, isSubagent: true, parentToolUseId: 'r1' });
+  stopAsyncSubagent(s, 'r1', SUBAGENT_STOPPED);
+  assert.equal(syncAgentTasks(s), true);
+  assert.equal(s.agentTasks!.find((t) => t.id === 'l1')!.status, 'stopped');
+  assert.equal(syncAgentTasks(s), false);
 });
 
 test('a transcript that ends on a hand-back tool is done, with the handed-back report', () => {

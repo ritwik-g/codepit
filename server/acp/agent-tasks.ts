@@ -196,9 +196,11 @@ export function syncAgentTasks(s: AcpSession): boolean {
       relabelled = true;
     }
   }
-  if (kept.length === s.agentTasks.length && !relabelled) return false;
+  const removed = kept.length !== s.agentTasks.length;
   s.agentTasks = kept;
-  return true;
+  // Sessions saved before orphans were ended can hold a child left running under an ended parent
+  const orphans = endOrphanedSubagents(s).length > 0;
+  return removed || relabelled || orphans;
 }
 
 /**
@@ -239,6 +241,44 @@ export function stopAsyncSubagent(s: AcpSession, taskId: string, reason: string,
     call.backgroundEndedAt = task.endedAt;
   }
   return { task, call };
+}
+
+/** Why a subagent is recorded as stopped when the subagent that started it ended first. */
+export const SUBAGENT_ORPHANED = 'Stopped with the subagent that started it';
+
+/**
+ * End foreground subagents whose parent task has already ended. Claude Code takes a
+ * subagent's children down with it (e.g. a stopped background reviewer stops its lens
+ * agents) but its adapter reports nothing for them: their Agent calls stay pending and the
+ * task would show as running for good, keeping the session "working". A foreground child
+ * cannot outlive the agent waiting on it, however that agent ended. Async children report
+ * their own end (transcript, async task) and are left to it.
+ */
+export function endOrphanedSubagents(s: AcpSession): AgentTask[] {
+  const tasks = tasksOf(s);
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const ended: AgentTask[] = [];
+  // Repeated so a grandchild follows a child ended in the same pass
+  for (let again = true; again; ) {
+    again = false;
+    for (const task of tasks) {
+      if (task.kind !== 'subagent' || task.status !== 'running' || !task.parentTaskId || task.asyncTaskId) continue;
+      const parent = byId.get(task.parentTaskId);
+      if (!parent || parent.status === 'running') continue;
+      const call = task.toolCallId ? findCall(s, task.toolCallId) : undefined;
+      // An async child, or a subagent session that can be given more work, ends on its own terms
+      if (call && (call.background || call.agentOutputFile || call.id.startsWith('subagent:'))) continue;
+      finish(task, 'stopped', SUBAGENT_ORPHANED, parent.endedAt && parent.endedAt >= task.startedAt ? parent.endedAt : undefined);
+      if (call && (call.status === 'pending' || call.status === 'running')) {
+        call.status = 'failed';
+        call.error ??= SUBAGENT_ORPHANED;
+        call.completedAt ??= task.endedAt;
+      }
+      ended.push(task);
+      again = true;
+    }
+  }
+  return ended;
 }
 
 /**

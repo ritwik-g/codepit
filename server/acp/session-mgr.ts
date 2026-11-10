@@ -19,7 +19,7 @@ import { cachedAgentOptions, effortChoicesFor, effortLabel, markNewModels, remem
 import { logQueueEvent } from '../queue-log.js';
 import { decideLimitResume, limitNoticeInText, parseUsageLimit, readLimitResumeMode, writeLimitResumeMode, MAX_LIMIT_STREAK, RESUME_BUFFER_MS, type RejectedLimit, type UsageLimitHit } from '../limit-resume.js';
 import { IDLE_STOPS_PER_TICK, idleLabel, readIdleStopHours, writeIdleStopHours } from '../idle-stop.js';
-import { appendSubagentText, completeAsyncSubagent, endAgentTasks, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, subagentStopRequest, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
+import { appendSubagentText, completeAsyncSubagent, endAgentTasks, endOrphanedSubagents, settleEndedSubagents, stopAgentTask, stopAsyncSubagent, stopTranscriptWatchers, SUBAGENT_STOPPED, subagentStopRequest, syncAgentTasks, trackAsyncTask, trackTaskText, trackToolCall, trackToolCallUpdate, watchSubagentTranscript } from './agent-tasks.js';
 import { AUTO_EFFORT } from '../types.js';
 import type { SpawnedBy } from '../types.js';
 import { revokeToken } from '../mcp/codepit/access.js';
@@ -740,8 +740,10 @@ export class SessionManager extends EventEmitter {
     this.emit('sessionStream', { sessionId, type: 'agentTaskText', taskText });
   }
 
-  private agentTasksChanged(sessionId: string, tasks: AgentTask[]): AgentTask[] | undefined {
+  private agentTasksChanged(sessionId: string, changed: AgentTask[]): AgentTask[] | undefined {
     const session = store.get(sessionId);
+    // A subagent that ended takes the foreground subagents it started with it
+    const tasks = session && changed.some((t) => t.status !== 'running') ? [...changed, ...endOrphanedSubagents(session)] : changed;
     const host = this.activeHosts.get(sessionId) ?? this.startingHosts.get(sessionId)?.host;
     for (const task of tasks) {
       // Stamped once, when first seen: which agent, model and agent session it ran under. A task
@@ -772,9 +774,10 @@ export class SessionManager extends EventEmitter {
           const s = store.get(sessionId);
           const done = s && (stopped ? stopAsyncSubagent(s, task.id, SUBAGENT_STOPPED) : completeAsyncSubagent(s, task.id, report));
           if (!s || !done) return;
+          const orphans = endOrphanedSubagents(s);
           store.save(s, { touch: false });
           const owner = done.call && findToolCall(s, done.call.id);
-          this.emit('sessionStream', { sessionId, type: 'backgroundUpdate', toolCall: done.call, turn: owner?.turn, agentTasks: [done.task] });
+          this.emit('sessionStream', { sessionId, type: 'backgroundUpdate', toolCall: done.call, turn: owner?.turn, agentTasks: [done.task, ...orphans] });
           this.recheckAutoCompact(sessionId);
         },
         () => {
@@ -782,8 +785,9 @@ export class SessionManager extends EventEmitter {
           const s = store.get(sessionId);
           const ended = s && stopAgentTask(s, task.id, 'No sign of it finishing after 6 hours');
           if (!s || !ended) return;
+          const orphans = endOrphanedSubagents(s);
           store.save(s, { touch: false });
-          this.emit('sessionStream', { sessionId, type: 'agentTask', agentTasks: [ended] });
+          this.emit('sessionStream', { sessionId, type: 'agentTask', agentTasks: [ended, ...orphans] });
           this.recheckAutoCompact(sessionId);
         }
       );
@@ -1121,6 +1125,7 @@ export class SessionManager extends EventEmitter {
       // Every task gets a record, even one no tool call can be matched to
       const idsBefore = (s.agentTasks || []).map((t) => t.id);
       const task = trackAsyncTask(s, u, callId && findToolCall(s, callId) ? callId : undefined);
+      const orphans = task && task.status !== 'running' ? endOrphanedSubagents(s) : [];
       // A duplicate record merged into this one is gone; the client must drop it too
       const removed = idsBefore.filter((id) => !s.agentTasks?.some((t) => t.id === id));
       const removedAgentTaskIds = removed.length > 0 ? removed : undefined;
@@ -1128,7 +1133,7 @@ export class SessionManager extends EventEmitter {
       if (!owner) {
         if (task) {
           store.save(s, { touch: false });
-          this.emit('sessionStream', { sessionId: s.id, type: 'agentTask', agentTasks: [task], removedAgentTaskIds });
+          this.emit('sessionStream', { sessionId: s.id, type: 'agentTask', agentTasks: [task, ...orphans], removedAgentTaskIds });
           this.recheckAutoCompact(s.id);
         }
         return;
@@ -1149,7 +1154,7 @@ export class SessionManager extends EventEmitter {
       if (task) trackToolCallUpdate(s, call);
       store.save(s, { touch: false });
       // Not 'toolCallUpdate': the turn may be long over, and that event marks the session working
-      this.emit('sessionStream', { sessionId: s.id, type: 'backgroundUpdate', toolCall: call, turn: withoutToolCalls(owner.turn), agentTasks: task ? [task] : undefined, removedAgentTaskIds });
+      this.emit('sessionStream', { sessionId: s.id, type: 'backgroundUpdate', toolCall: call, turn: withoutToolCalls(owner.turn), agentTasks: task ? [task, ...orphans] : undefined, removedAgentTaskIds });
       this.recheckAutoCompact(s.id);
     });
 
@@ -2131,8 +2136,9 @@ export class SessionManager extends EventEmitter {
       owner.call.backgroundSummary = ended.summary;
       owner.call.backgroundEndedAt = ended.endedAt;
     }
+    const orphans = endOrphanedSubagents(s);
     store.save(s, { touch: false });
-    this.emit('sessionStream', { sessionId, type: 'backgroundUpdate', toolCall: owner?.call, turn: owner ? withoutToolCalls(owner.turn) : undefined, agentTasks: [ended] });
+    this.emit('sessionStream', { sessionId, type: 'backgroundUpdate', toolCall: owner?.call, turn: owner ? withoutToolCalls(owner.turn) : undefined, agentTasks: [ended, ...orphans] });
     this.recheckAutoCompact(sessionId);
     return true;
   }
